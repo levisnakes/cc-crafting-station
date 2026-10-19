@@ -1,6 +1,7 @@
 -- Crafting Station: a crafty turtle that does 3x3 crafting for Create 6 Factory Gauges.
--- Gauges with "Use Mechanical Crafting" send their ingredients to the shared address;
--- the recipe comes with each package. The turtle crafts and sends the results to storage.
+-- Gauges with "Use Mechanical Crafting" (or Factory Controller's "Use Custom Arrangement", laid
+-- out like a crafting table) send their ingredients to the shared address; the recipe comes with
+-- each package. The turtle crafts and sends the results to storage.
 -- Build as many stations as you like with the same Frogport address: each one is identical.
 --
 -- One station:  Crafty Turtle with an input Packager on its front (Frogport with the shared
@@ -261,8 +262,29 @@ local function onPackage(pkg)
     local okC, c = pcall(order.getCrafts)
     if okC and type(c) == "table" and next(c) then crafts = c end
   end
+  if not crafts and okO and type(order) == "table" then
+    -- Factory Controller's "Use Custom Arrangement": the order lists 9 slots in crafting-table
+    -- order (air for gaps) plus a marker item; that layout is the recipe
+    local okL, layout = pcall(order.list)
+    if okL and type(layout) == "table" then
+      local marked, recipe, any = false, {}, false
+      for _, it in pairs(layout) do
+        if type(it) == "table" and it.name == "createfactorycontroller:arrangement_marker" then marked = true end
+      end
+      for i = 1, 9 do
+        local it = layout[i]
+        local name = type(it) == "table" and it.name
+        if name and name ~= "minecraft:air" and name ~= "createfactorycontroller:arrangement_marker" and (it.count or 1) > 0 then
+          recipe[i], any = name, true
+        else
+          recipe[i] = false
+        end
+      end
+      if marked and any then crafts = { { count = 1, recipe = recipe } } end
+    end
+  end
   if not crafts then
-    log("warn", "Package without a recipe: sending it back. Turn on 'Use Mechanical Crafting' on its gauge.")
+    log("warn", "Package without a recipe: sending it back. Use 'Use Mechanical Crafting' or 'Use Custom Arrangement' on its gauge.")
     state.looseItems = true
     return
   end

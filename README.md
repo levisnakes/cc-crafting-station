@@ -27,7 +27,12 @@ Then `reboot`. It updates itself from GitHub (on start and every 15 minutes), ke
 
 ## Gauges
 
-On each Factory Gauge for a 3x3 crafting recipe: open **Recipe Settings**, turn on **Use Mechanical Crafting**, and set the address to the shared crafting address. Packages without a recipe are sent straight back to storage.
+Each Factory Gauge for a 3x3 crafting recipe sends to the shared crafting address, using either:
+
+- **Use Custom Arrangement** (Factory Controller mod), recommended: lay the ingredients out like a crafting table, with the amount per slot = crafts per order. Orders arrive as whole packages, even through a Repackager.
+- **Use Mechanical Crafting** (Create): works too, but a Repackager splits these into one package per craft; the turtle collects them and still crafts them together.
+
+Packages without a recipe or arrangement are sent straight back to storage.
 
 ## Settings
 
