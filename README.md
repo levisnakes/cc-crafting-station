@@ -5,16 +5,17 @@ A Crafty Turtle that does the 3x3 crafting for Create 6 Factory Gauges, in place
 ## One station
 
 ```
- [Frogport]                 Frogport address: your shared crafting address (e.g. MB-Crafty-In)
- [Packager] [Barrel]        Packager against the back of the turtle, Barrel on top of the turtle
-            [Turtle]        a Crafty Turtle (turtle + crafting table)
+                [Barrel]                     on top of the turtle: the buffer it sorts ingredients in
+ [Packager IN]  [Turtle]  [Packager OUT]     IN on the turtle's front, OUT on its back
+ [Frogport]               [Frogport]         IN Frogport = shared crafting address (e.g. MB-Crafty-In)
 ```
 
-- **Packager** touching the turtle (the turtle is its inventory). Only one Packager may touch each turtle.
-- **Frogport** on the Packager, connected to your chain conveyor, address = the shared crafting address.
-- **Barrel** on top of (or under) the turtle: the buffer it sorts ingredients in. Use barrels, not chests, so neighbouring stations don't merge into double chests.
+- **Crafty Turtle** (turtle + crafting table).
+- **Input Packager on the turtle's front**, with a Frogport set to the shared crafting address. Ingredients arrive here.
+- **Output Packager on the turtle's back**, with its own Frogport. Give that Frogport an address nothing else uses (e.g. `MB-Crafty-Out`); results leave addressed to `OUT_ADDRESS`.
+- **Barrel** on top of (or under) the turtle. Use barrels, not chests, so neighbouring stations don't merge into double chests.
 
-Tile stations side by side: turtle next to turtle, Packager next to Packager, Barrel next to Barrel. Give every Frogport the same address.
+Tile stations side by side, turtle next to turtle. Every input Frogport gets the same address. `INPUT_SIDE` / `OUTPUT_SIDE` change which sides are which.
 
 ## Install (on each turtle)
 
@@ -33,6 +34,7 @@ On each Factory Gauge for a 3x3 crafting recipe: open **Recipe Settings**, turn 
 At the top of the file, or in `/config.lua` (survives updates; can be shared by every computer):
 
 - `OUT_ADDRESS` where results go (default `MB-Storage-In`)
+- `INPUT_SIDE`, `OUTPUT_SIDE` which side of the turtle each Packager is on (default `front` and `back`)
 - `QUIET_SECONDS` how long to wait after the last package before crafting everything at once
 - `STATION_NAME` name in alerts (default: the turtle's label)
 - `DISCORD_WEBHOOK`, `DISCORD_MENTION` ping when a station is stuck (not set up, buffer full, can't send, ingredients missing for 3+ min); a follow-up without a ping says when it's fixed

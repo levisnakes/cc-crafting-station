@@ -3,10 +3,13 @@
 -- the recipe comes with each package. The turtle crafts and sends the results to storage.
 -- Build as many stations as you like with the same Frogport address: each one is identical.
 --
--- One station:  Crafty Turtle, a Packager against the turtle (its Frogport on top of the
--- Packager), and a Barrel on top of or under the turtle as its buffer.
+-- One station:  Crafty Turtle with an input Packager on its front (Frogport with the shared
+-- crafting address), an output Packager on its back (its own Frogport), and a Barrel on top of
+-- or under the turtle as its buffer.
 
 OUT_ADDRESS = "MB-Storage-In"  -- where finished items (and anything without a recipe) are sent
+INPUT_SIDE = "front"           -- the Packager that receives ingredient packages
+OUTPUT_SIDE = "back"           -- the Packager that sends the results
 QUIET_SECONDS = 1              -- wait this long after the last package, then craft everything at once
 STATION_NAME = nil             -- nil = the turtle's label, or "Station <id>"
 DISCORD_WEBHOOK = nil          -- Discord webhook URL (in quotes) for "stuck" alerts
@@ -88,17 +91,14 @@ local state = {
 
 -- ============================================================ peripherals
 
-local packager, packagerSide, buffer, bufferSide
-local packagerCount = 0
+local inputPackager, outputPackager, buffer, bufferSide
 
 local function findPeripherals()
-  packager, packagerSide, buffer, bufferSide = nil, nil, nil, nil
-  packagerCount = 0
-  for _, side in ipairs({ "front", "back", "left", "right", "top", "bottom" }) do
-    if peripheral.hasType(side, "Create_Packager") then
-      packagerCount = packagerCount + 1
-      if not packager then packager, packagerSide = peripheral.wrap(side), side end
-    elseif (side == "top" or side == "bottom") and peripheral.hasType(side, "inventory") and not buffer then
+  inputPackager, outputPackager, buffer, bufferSide = nil, nil, nil, nil
+  if peripheral.hasType(INPUT_SIDE, "Create_Packager") then inputPackager = peripheral.wrap(INPUT_SIDE) end
+  if peripheral.hasType(OUTPUT_SIDE, "Create_Packager") then outputPackager = peripheral.wrap(OUTPUT_SIDE) end
+  for _, side in ipairs({ "top", "bottom" }) do
+    if not buffer and peripheral.hasType(side, "inventory") and not peripheral.hasType(side, "Create_Packager") then
       buffer, bufferSide = peripheral.wrap(side), side
     end
   end
@@ -107,8 +107,8 @@ end
 local function setupProblem()
   if not turtle then return "This program needs a turtle" end
   if not turtle.craft then return "No crafting table: use a Crafty Turtle" end
-  if not packager then return "No Packager touching the turtle" end
-  if packagerCount > 1 then return "2 Packagers touch this turtle: keep only its own" end
+  if not inputPackager then return "No input Packager on the turtle's " .. INPUT_SIDE end
+  if not outputPackager then return "No output Packager on the turtle's " .. OUTPUT_SIDE end
   if not buffer then return "No Barrel on top of or under the turtle" end
   return nil
 end
@@ -279,7 +279,7 @@ end
 -- Package everything in the turtle and send it to OUT_ADDRESS. With `keep` (slot -> count),
 -- anything beyond those counts arrived in the meantime and goes to the buffer first.
 local function sendTurtle(keep)
-  pcall(packager.setAddress, OUT_ADDRESS)
+  pcall(outputPackager.setAddress, OUT_ADDRESS)
   for _ = 1, 40 do
     if turtleEmpty() then
       state.sendFails = 0
@@ -295,7 +295,7 @@ local function sendTurtle(keep)
       end
       turtle.select(1)
     end
-    local ok, made = pcall(packager.makePackage)
+    local ok, made = pcall(outputPackager.makePackage)
     if not (ok and made) then sleep(0.5) end
   end
   state.sendFails = state.sendFails + 1
@@ -579,11 +579,11 @@ local function alertLoop()
       lastCheck = now()
       local name = "**" .. stationName() .. "**"
       problemCheck("setup", state.problem ~= nil and state.problem ~= "Barrel is full", 60, "Crafting station not set up",
-        name .. ": " .. tostring(state.problem), "Check the turtle's Packager, Barrel and crafting table, then restart the turtle.")
+        name .. ": " .. tostring(state.problem), "Check the turtle's input and output Packagers, Barrel and crafting table, then restart the turtle.")
       problemCheck("full", state.problem == "Barrel is full", 60, "Crafting station buffer full",
         name .. "'s Barrel is full, so it can't sort ingredients.", "Empty the Barrel into storage, or press S on the turtle to send everything back.")
       problemCheck("send", state.sendFails >= 3, 0, "Crafting station can't send results",
-        name .. " can't send to **" .. OUT_ADDRESS .. "**.", "Check the Frogport on the turtle's Packager is connected, and that the address exists.")
+        name .. " can't send to **" .. OUT_ADDRESS .. "**.", "Check the Frogport on the output Packager (" .. OUTPUT_SIDE .. " of the turtle) is connected, and that the address exists.")
       local oldest = oldestJob()
       problemCheck("waiting", oldest ~= nil and now() - oldest > 180, 0, "Crafting station waiting on ingredients",
         name .. " has had an order for 3+ minutes but not all of its ingredients arrived.", "Press S on the turtle to send the items back; the gauge will order again.")
@@ -671,13 +671,14 @@ local function drawSetup(w, h)
     y = y + 1
   end
   row("Crafting", turtle and turtle.craft ~= nil, (turtle and turtle.craft) and "crafting table fitted" or "use a Crafty Turtle")
-  row("Packager", packager ~= nil, packager and packagerSide or "place one against the turtle")
+  row("Input", inputPackager ~= nil, inputPackager and ("Packager " .. INPUT_SIDE) or ("Packager on the " .. INPUT_SIDE))
+  row("Output", outputPackager ~= nil, outputPackager and ("Packager " .. OUTPUT_SIDE) or ("Packager on the " .. OUTPUT_SIDE))
   row("Buffer", buffer ~= nil, buffer and ("barrel " .. bufferSide) or "barrel on top or under")
   row("Sends to", true, OUT_ADDRESS)
   row("Discord", DISCORD_WEBHOOK ~= nil, DISCORD_WEBHOOK and (alerts.error and "error" or "stuck alerts on") or "off")
   row("Name", true, stationName())
   y = y + 1
-  put(2, y, fit("Frogport address: the shared crafting", w - 2), colors.gray)
+  put(2, y, fit("Input Frogport: the shared crafting", w - 2), colors.gray)
   put(2, y + 1, fit("address all your gauges send to.", w - 2), colors.gray)
 end
 
@@ -757,7 +758,7 @@ end
 -- ============================================================ start
 
 findPeripherals()
-if packager then pcall(packager.setAddress, OUT_ADDRESS) end
+if outputPackager then pcall(outputPackager.setAddress, OUT_ADDRESS) end
 log("info", "Started " .. stationName() .. " v" .. VERSION)
 
 local function readyToUpdate()
