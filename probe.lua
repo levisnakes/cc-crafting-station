@@ -38,12 +38,15 @@ local function showPackage(ev, pkg)
   if okL and type(list) == "table" then
     for _, it in pairs(list) do say(" " .. it.count .. "x " .. it.name) end
   end
-  local okH, has = pcall(pkg.hasOrderData)
-  if not (okH and has) then
-    say(" NO recipe data on this package")
+  local okO, order = pcall(pkg.getOrderData)
+  if not okO or type(order) ~= "table" then
+    say(" no order data: " .. tostring(order))
     return
   end
-  local okC, crafts = pcall(function() return pkg.getOrderData().getCrafts() end)
+  local okI, id = pcall(order.getOrderID)
+  local okF, final = pcall(order.isFinal)
+  say(" order " .. tostring(okI and id) .. ", last package: " .. tostring(okF and final))
+  local okC, crafts = pcall(order.getCrafts)
   if not okC or type(crafts) ~= "table" or next(crafts) == nil then
     say(" order data, but no crafts: " .. tostring(crafts))
     return
