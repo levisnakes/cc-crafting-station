@@ -239,6 +239,16 @@ local function perCraft(recipe)
   return need
 end
 
+-- Whole crafts covered by the ingredients that have arrived for a job.
+local function craftsFromReceived(job)
+  local n
+  for name, per in pairs(perCraft(job.recipe)) do
+    local k = math.floor(((job.received or {})[name] or 0) / per)
+    n = n and math.min(n, k) or k
+  end
+  return n or 0
+end
+
 local function jobLabel(job)
   return job.output and short(job.output) or ("recipe with " .. short(next(perCraft(job.recipe)) or "?"))
 end
@@ -256,6 +266,15 @@ local function onPackage(pkg)
     state.looseItems = true
     return
   end
+  -- what's in the box: a bulk order (no Repackager) holds many crafts' worth even though
+  -- its recipe says "craft 1", so the number of crafts comes from the items themselves
+  local got = {}
+  local okL, contents = pcall(pkg.list)
+  if okL and type(contents) == "table" then
+    for _, it in pairs(contents) do
+      if type(it) == "table" and it.name then got[it.name] = (got[it.name] or 0) + (it.count or 0) end
+    end
+  end
   for _, c in pairs(crafts) do
     local recipe = {}
     for i = 1, 9 do
@@ -268,7 +287,21 @@ local function onPackage(pkg)
       job = { recipe = recipe, crafts = 0, since = now() }
       jobs[key] = job
     end
-    job.crafts = job.crafts + (tonumber(c.count) or 1)
+    job.received = job.received or {}
+    local per = perCraft(recipe)
+    local counted = false
+    for name in pairs(per) do
+      if got[name] then
+        job.received[name] = (job.received[name] or 0) + got[name]
+        got[name] = nil
+        counted = true
+      end
+    end
+    if not counted then
+      -- couldn't read the contents: trust the package's own craft count
+      for name, n in pairs(per) do job.received[name] = (job.received[name] or 0) + n * (tonumber(c.count) or 1) end
+    end
+    job.crafts = craftsFromReceived(job)
     job.waitingSince = job.waitingSince or now()
   end
   saveJobs()
@@ -464,7 +497,14 @@ local function work()
       local done = craftBatch(job, n)
       if done <= 0 then break end
       reserve(counts, job, done)
-      job.crafts = job.crafts - done
+      if job.received then
+        for name, per in pairs(perCraft(job.recipe)) do
+          job.received[name] = math.max(0, (job.received[name] or 0) - per * done)
+        end
+        job.crafts = craftsFromReceived(job)
+      else
+        job.crafts = job.crafts - done
+      end
       can = can - done
       job.waitingSince = now()
     end
