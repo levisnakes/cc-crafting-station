@@ -46,6 +46,18 @@ local function showPackage(ev, pkg)
   local okI, id = pcall(order.getOrderID)
   local okF, final = pcall(order.isFinal)
   say(" order " .. tostring(okI and id) .. ", last package: " .. tostring(okF and final))
+  local okOL, olist = pcall(order.list)
+  if okOL and type(olist) == "table" then
+    local keys = {}
+    for k in pairs(olist) do keys[#keys + 1] = k end
+    table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+    for _, k in ipairs(keys) do
+      local it = olist[k]
+      say(" order slot " .. tostring(k) .. ": " .. tostring(type(it) == "table" and ((it.count or "?") .. "x " .. tostring(it.name)) or it))
+    end
+  else
+    say(" order list: " .. tostring(olist))
+  end
   local okC, crafts = pcall(order.getCrafts)
   if not okC or type(crafts) ~= "table" or next(crafts) == nil then
     say(" order data, but no crafts: " .. tostring(crafts))
