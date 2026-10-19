@@ -191,11 +191,15 @@ local function parkAll(keep)
   return ok
 end
 
--- Pull `count` of `name` from the buffer into the selected turtle slot.
--- A suck takes from the first filled buffer slot, so that item is moved to the front first.
-local function fetch(name, count)
+-- Pull `count` of `name` from the buffer into turtle slot `target`.
+-- A suck takes the first filled barrel slot, so each one lands in an empty spare (non-grid) slot:
+-- the wanted item moves on to `target`, anything else stays in the spare slot out of the way
+-- (the caller parks it again). Moving the item to the barrel's front first is only a shortcut.
+local SPARE = { 4, 8, 12, 13, 14, 15, 16 }
+
+local function fetch(name, count, target)
   local got = 0
-  for _ = 1, 8 do
+  for _ = 1, 12 do
     if got >= count then break end
     local ok, list = pcall(buffer.list)
     if not ok or not list then break end
@@ -206,19 +210,26 @@ local function fetch(name, count)
     if not from then break end
     if from ~= 1 then
       if list[1] then
-        local size = buffer.size()
         local empty
-        for s = size, 2, -1 do if not list[s] then empty = s break end end
-        if not empty then break end
-        pcall(buffer.pushItems, bufferSide, 1, 64, empty)
+        for s = buffer.size(), 2, -1 do if not list[s] then empty = s break end end
+        if empty then pcall(buffer.pushItems, bufferSide, 1, 64, empty) end
       end
-      pcall(buffer.pushItems, bufferSide, from, count - got, 1)
+      pcall(buffer.pushItems, bufferSide, from, 64, 1)
     end
-    local before = turtle.getItemCount()
-    suckFromBuffer(count - got)
-    local gained = turtle.getItemCount() - before
-    if gained <= 0 then break end
-    got = got + gained
+    local spare
+    for _, s in ipairs(SPARE) do if turtle.getItemCount(s) == 0 then spare = s break end end
+    if not spare then break end
+    turtle.select(spare)
+    if not suckFromBuffer(64) then break end
+    local d = turtle.getItemDetail(spare)
+    if d and d.name == name then
+      local before = turtle.getItemCount(target)
+      turtle.transferTo(target, count - got)
+      local moved = turtle.getItemCount(target) - before
+      got = got + moved
+      if turtle.getItemCount(spare) > 0 then dropToBuffer() end
+      if moved <= 0 then break end
+    end
   end
   return got
 end
@@ -387,9 +398,8 @@ local function craftBatch(job, n)
   for i = 1, 9 do
     local name = job.recipe[i]
     if name then
-      turtle.select(GRID[i])
-      local have = turtle.getItemCount()
-      if have < n then fetch(name, n - have) end
+      local have = turtle.getItemCount(GRID[i])
+      if have < n then fetch(name, n - have, GRID[i]) end
     end
   end
   turtle.select(1)
@@ -404,6 +414,7 @@ local function craftBatch(job, n)
     end
   end
   if crafts <= 0 then
+    state.lastFail = "couldn't get all the ingredients out of the Barrel"
     parkAll()
     return 0
   end
@@ -429,6 +440,7 @@ local function craftBatch(job, n)
   end
   turtle.select(1)
   if done <= 0 then
+    state.lastFail = "the turtle couldn't craft that layout (not a crafting recipe?)"
     parkAll()
     return 0
   end
@@ -471,34 +483,32 @@ local function reserve(counts, job, crafts)
   end
 end
 
--- Send everything not needed by a waiting job back to storage.
-local function returnLeftovers(all)
+-- Send everything in the turtle and the barrel back to storage (only called with no orders
+-- waiting, or for "Send all back").
+local function returnLeftovers()
   if not parkAll() then return end
-  local counts = bufferCounts()
-  if not all then
-    for _, job in pairs(jobs) do reserve(counts, job, job.crafts) end
-  end
   local any = false
-  for name, n in pairs(counts) do
-    while n > 0 do
-      local slot
-      for i = 1, 16 do if turtle.getItemCount(i) == 0 then slot = i break end end
-      if not slot then
-        sendTurtle()
-        slot = 1
-      end
-      turtle.select(slot)
-      local got = fetch(name, math.min(n, maxStack(name)))
-      if got <= 0 then break end
-      n = n - got
-      any = true
+  for _ = 1, 60 do
+    local ok, list = pcall(buffer.list)
+    if not ok or not list or next(list) == nil then break end
+    local slot
+    for i = 1, 16 do if turtle.getItemCount(i) == 0 then slot = i break end end
+    if not slot then
+      sendTurtle()
+      slot = 1
     end
+    turtle.select(slot)
+    if not suckFromBuffer() then break end
+    any = true
   end
   turtle.select(1)
-  if any and not turtleEmpty() then
-    log("info", "Sent leftover items back to " .. OUT_ADDRESS)
-    sendTurtle()
-  end
+  if not turtleEmpty() then sendTurtle() end
+  if any then log("info", "Sent leftover items back to " .. OUT_ADDRESS) end
+end
+
+local function bufferEmpty()
+  local ok, list = pcall(buffer.list)
+  return not ok or not list or next(list) == nil
 end
 
 local function work()
@@ -517,7 +527,15 @@ local function work()
       local n = math.min(can, limit)
       state.status = "Crafting " .. n .. "x " .. jobLabel(job)
       local done = craftBatch(job, n)
-      if done <= 0 then break end
+      if done <= 0 then
+        job.fails = (job.fails or 0) + 1
+        if job.fails >= 3 then
+          log("error", "Gave up on " .. job.crafts .. "x " .. jobLabel(job) .. ": " .. tostring(state.lastFail) .. ". Items sent back.")
+          job.crafts, job.givenUp = 0, true
+        end
+        break
+      end
+      job.fails = 0
       reserve(counts, job, done)
       if job.received then
         for name, per in pairs(perCraft(job.recipe)) do
@@ -543,10 +561,10 @@ local function work()
     state.returnAll = false
     jobs = {}
     saveJobs()
-    returnLeftovers(true)
+    returnLeftovers()
     log("info", "Sent everything back to " .. OUT_ADDRESS)
   elseif next(jobs) == nil then
-    returnLeftovers(false)
+    returnLeftovers()
   end
   state.looseItems = false
   state.busy = false
@@ -581,8 +599,9 @@ local function workLoop()
       if not ok then log("error", "Error: " .. tostring(err)) end
     elseif pending then
       state.status = "Receiving..."
-    elseif not turtleEmpty() and now() - state.lastArrival > 5 then
-      -- items with no job (e.g. after a restart): send them home
+    elseif now() - state.lastArrival > 5 and (not turtleEmpty() or (now() - (state.lastBufferCheck or 0) > 10 and not bufferEmpty())) then
+      -- items with no order (after a restart, or a given-up order): send them home
+      state.lastBufferCheck = now()
       pcall(work)
       state.busy = false
     else
