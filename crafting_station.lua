@@ -704,7 +704,9 @@ local function workLoop()
       if not ok then log("error", "Error: " .. tostring(err)) end
     elseif pending then
       state.status = "Receiving..."
-    elseif state.pairing and #pairing.candidates > 0 then
+    elseif state.pairing and #pairing.candidates > 0 and now() - (state.pairingWait or now()) < 20 then
+      -- give a pairing 20 s at most; after that the barrel is emptied like any leftovers
+      state.pairingWait = state.pairingWait or now()
       state.status = "Pairing..."
     elseif now() - state.lastArrival > 5 and (not turtleEmpty() or (now() - (state.lastBufferCheck or 0) > 10 and not bufferEmpty())) then
       -- items with no order (after a restart, or a given-up order): send them home
@@ -714,6 +716,7 @@ local function workLoop()
     else
       state.status = "Ready"
     end
+    if not state.pairing or bufferEmpty() then state.pairingWait = nil end
     if inputFrogport then
       local open = not state.problem and not state.paused and not state.busy and next(jobs) == nil
         and now() - state.lastArrival > 0.5 and turtleEmpty() and frogportEmpty() and bufferEmpty()
