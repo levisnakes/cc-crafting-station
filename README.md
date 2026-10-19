@@ -17,7 +17,7 @@ A Crafty Turtle that does the 3x3 crafting for Create 6 Factory Gauges, in place
 
 Tile stations side by side, turtle next to turtle. Use barrels, not chests, so neighbours don't merge.
 
-**Frogport reached through wired modems** (stations' modems touching, so they share one network): leave `INPUT_SIDE` alone. A turtle that has no Frogport on its front pairs by itself: the first time one of the network's Frogports catches a package and exactly those items land in this turtle's barrel, that Frogport is its own. The pairing is saved; **Re-pair** on the Setup tab forgets it. Set every input Frogport to the shared address once before pairing. The barrel and the output Packager still have to touch the turtle.
+**Frogport reached through wired modems** (stations' modems touching, so they share one network): leave `INPUT_SIDE` alone. A turtle that has no Frogport on its front pairs by itself: the first time one of the network's Frogports catches a package and exactly those items land in this turtle's barrel, that Frogport is its own. The pairing is saved; **Re-pair** on the Setup tab forgets it. Set every input Frogport to the shared address once before pairing. Or skip pairing: put INPUT_SIDE = "Create_Frogport_3" (that station's number, shown in chat when you right-click its modem) in /station.lua on the turtle. That file is the turtle's own settings, loaded after /config.lua, and survives updates. The barrel and the output Packager still have to touch the turtle.
 
 Older layout, still supported: input Packager directly on the turtle's front (unpacking into the turtle) with its Frogport on top. That layout can't share load between stations: the first station takes every package.
 
