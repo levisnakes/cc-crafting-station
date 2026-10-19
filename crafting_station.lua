@@ -4,12 +4,16 @@
 -- each package. The turtle crafts and sends the results to storage.
 -- Build as many stations as you like with the same Frogport address: each one is identical.
 --
--- One station:  Crafty Turtle with an input Packager on its front (Frogport with the shared
--- crafting address), an output Packager on its back (its own Frogport), and a Barrel on top of
--- or under the turtle as its buffer.
+-- One station:  Crafty Turtle with its input Frogport on its front (standing on the input
+-- Packager, which is attached to the Barrel under the turtle), and an output Packager on its back
+-- (with its own Frogport). The turtle switches its Frogport between the shared address (empty,
+-- taking orders) and a busy address, so several stations share the work.
+-- Older layout, still supported: the input Packager itself on the front, unpacking into the turtle.
 
 OUT_ADDRESS = "MB-Storage-In"  -- where finished items (and anything without a recipe) are sent
-INPUT_SIDE = "front"           -- the Packager that receives ingredient packages
+CRAFT_ADDRESS = "MB-Crafting-In"  -- the shared address all crafting gauges send to
+BUSY_ADDRESS = nil             -- the input Frogport's address while busy; nil = CRAFT_ADDRESS .. "-Busy"
+INPUT_SIDE = "front"           -- the input Frogport (or, older layout, the input Packager)
 OUTPUT_SIDE = "back"           -- the Packager that sends the results
 QUIET_SECONDS = 1              -- wait this long after the last package, then craft everything at once
 STATION_NAME = nil             -- nil = the turtle's label, or "Station <id>"
@@ -92,11 +96,12 @@ local state = {
 
 -- ============================================================ peripherals
 
-local inputPackager, outputPackager, buffer, bufferSide
+local inputPackager, inputFrogport, outputPackager, buffer, bufferSide
 
 local function findPeripherals()
-  inputPackager, outputPackager, buffer, bufferSide = nil, nil, nil, nil
-  if peripheral.hasType(INPUT_SIDE, "Create_Packager") then inputPackager = peripheral.wrap(INPUT_SIDE) end
+  inputPackager, inputFrogport, outputPackager, buffer, bufferSide = nil, nil, nil, nil, nil
+  if peripheral.hasType(INPUT_SIDE, "Create_Packager") then inputPackager = peripheral.wrap(INPUT_SIDE)
+  elseif peripheral.hasType(INPUT_SIDE, "Create_Frogport") then inputFrogport = peripheral.wrap(INPUT_SIDE) end
   if peripheral.hasType(OUTPUT_SIDE, "Create_Packager") then outputPackager = peripheral.wrap(OUTPUT_SIDE) end
   for _, side in ipairs({ "top", "bottom" }) do
     if not buffer and peripheral.hasType(side, "inventory") and not peripheral.hasType(side, "Create_Packager") then
@@ -108,10 +113,28 @@ end
 local function setupProblem()
   if not turtle then return "This program needs a turtle" end
   if not turtle.craft then return "No crafting table: use a Crafty Turtle" end
-  if not inputPackager then return "No input Packager on the turtle's " .. INPUT_SIDE end
+  if not inputPackager and not inputFrogport then return "No input Frogport on the turtle's " .. INPUT_SIDE end
   if not outputPackager then return "No output Packager on the turtle's " .. OUTPUT_SIDE end
   if not buffer then return "No Barrel on top of or under the turtle" end
   return nil
+end
+
+-- Frogport layout: the station takes orders on CRAFT_ADDRESS only while it's empty, so the chain
+-- carries the next packages on to a free station.
+local function busyAddress() return BUSY_ADDRESS or (CRAFT_ADDRESS .. "-Busy") end
+
+local function setOpen(open)
+  if not inputFrogport then return end
+  local want = open and CRAFT_ADDRESS or busyAddress()
+  if state.advertised ~= want then
+    if pcall(inputFrogport.setAddress, want) then state.advertised = want end
+  end
+end
+
+local function frogportEmpty()
+  if not inputFrogport then return true end
+  local ok, list = pcall(inputFrogport.list)
+  return not ok or type(list) ~= "table" or next(list) == nil
 end
 
 -- ============================================================ inventory helpers
@@ -575,7 +598,8 @@ end
 local function eventLoop()
   while true do
     local e = { os.pullEvent() }
-    if e[1] == "package_received" then
+    if e[1] == "package_received" and (type(e[2]) ~= "string" or e[2] == INPUT_SIDE) then
+      if inputFrogport then setOpen(false) end
       for i = 2, #e do
         if type(e[i]) == "table" then pcall(onPackage, e[i]) break end
       end
@@ -590,6 +614,7 @@ local function workLoop()
     state.problem = setupProblem()
     local pending = next(jobs) ~= nil or state.looseItems or state.returnAll
     if state.problem then
+      if inputFrogport then setOpen(false) end
       state.status = "Setup needed"
     elseif state.paused then
       state.status = "Paused"
@@ -606,6 +631,11 @@ local function workLoop()
       state.busy = false
     else
       state.status = "Ready"
+    end
+    if inputFrogport then
+      local open = not state.problem and not state.paused and not state.busy and next(jobs) == nil
+        and now() - state.lastArrival > 0.5 and turtleEmpty() and frogportEmpty() and bufferEmpty()
+      setOpen(open)
     end
     sleep(0.25)
   end
@@ -713,6 +743,9 @@ end
 local function drawHome(w, h)
   local y = 3
   local status, color = state.status, colors.lime
+  if status == "Ready" and inputFrogport then
+    status = state.advertised == CRAFT_ADDRESS and ("Ready, taking orders on " .. CRAFT_ADDRESS) or "Finishing up"
+  end
   if state.problem then status, color = state.problem, colors.red
   elseif state.paused then color = colors.orange
   elseif state.busy or status:find("^Crafting") then color = colors.yellow end
@@ -752,7 +785,9 @@ local function drawSetup(w, h)
     y = y + 1
   end
   row("Crafting", turtle and turtle.craft ~= nil, (turtle and turtle.craft) and "crafting table fitted" or "use a Crafty Turtle")
-  row("Input", inputPackager ~= nil, inputPackager and ("Packager " .. INPUT_SIDE) or ("Packager on the " .. INPUT_SIDE))
+  row("Input", inputPackager ~= nil or inputFrogport ~= nil, inputFrogport and ("Frogport " .. INPUT_SIDE)
+    or inputPackager and ("Packager " .. INPUT_SIDE) or ("Frogport on the " .. INPUT_SIDE))
+  if inputFrogport then row("Orders", true, state.advertised == CRAFT_ADDRESS and ("open: " .. CRAFT_ADDRESS) or "busy") end
   row("Output", outputPackager ~= nil, outputPackager and ("Packager " .. OUTPUT_SIDE) or ("Packager on the " .. OUTPUT_SIDE))
   row("Buffer", buffer ~= nil, buffer and ("barrel " .. bufferSide) or "barrel on top or under")
   row("Sends to", true, OUT_ADDRESS)

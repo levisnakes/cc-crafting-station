@@ -5,17 +5,19 @@ A Crafty Turtle that does the 3x3 crafting for Create 6 Factory Gauges, in place
 ## One station
 
 ```
-                [Barrel]                     on top of the turtle: the buffer it sorts ingredients in
- [Packager IN]  [Turtle]  [Packager OUT]     IN on the turtle's front, OUT on its back
- [Frogport]               [Frogport]         IN Frogport = shared crafting address (e.g. MB-Crafting-In)
+ [Frogport IN]    [Turtle]    [Packager OUT]     IN Frogport on the turtle's front, OUT Packager on its back
+ [Packager IN]    [Barrel]    (+ its Frogport)   IN Packager attached to the Barrel under the turtle
 ```
 
 - **Crafty Turtle** (turtle + crafting table).
-- **Input Packager on the turtle's front**, with a Frogport set to the shared crafting address. Ingredients arrive here.
-- **Output Packager on the turtle's back**, with its own Frogport. Give that Frogport an address nothing else uses (e.g. `MB-Crafting-Out`); results leave addressed to `OUT_ADDRESS`.
-- **Barrel** on top of (or under) the turtle. Use barrels, not chests, so neighbouring stations don't merge into double chests.
+- **Barrel under the turtle.** Ingredients are unpacked into it.
+- **Input Packager** attached to that Barrel (place it against the Barrel's side, in front of the turtle).
+- **Input Frogport** on top of the input Packager, so it touches the turtle's front. Its address is managed by the turtle: `CRAFT_ADDRESS` (default `MB-Crafting-In`) while the station is empty, `MB-Crafting-In-Busy` while it works. That's how several stations on one address share the work: a busy station drops off the address and the chain carries packages on to a free one.
+- **Output Packager on the turtle's back**, with its own Frogport (any unused address, e.g. `MB-Crafting-Out`). Results leave addressed to `OUT_ADDRESS`.
 
-Tile stations side by side, turtle next to turtle. Every input Frogport gets the same address. `INPUT_SIDE` / `OUTPUT_SIDE` change which sides are which.
+Tile stations side by side, turtle next to turtle. Use barrels, not chests, so neighbours don't merge.
+
+Older layout, still supported: input Packager directly on the turtle's front (unpacking into the turtle) with its Frogport on top. That layout can't share load between stations: the first station takes every package.
 
 ## Install (on each turtle)
 
@@ -38,6 +40,7 @@ Packages without a recipe or arrangement are sent straight back to storage.
 
 At the top of the file, or in `/config.lua` (survives updates; can be shared by every computer):
 
+- `CRAFT_ADDRESS` the shared crafting address (default `MB-Crafting-In`); `BUSY_ADDRESS` the address while busy
 - `OUT_ADDRESS` where results go (default `MB-Storage-In`)
 - `INPUT_SIDE`, `OUTPUT_SIDE` which side of the turtle each Packager is on (default `front` and `back`)
 - `QUIET_SECONDS` how long to wait after the last package before crafting everything at once
