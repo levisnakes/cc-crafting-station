@@ -276,13 +276,24 @@ end
 
 -- ============================================================ sending
 
--- Package everything in the turtle and send it to OUT_ADDRESS.
-local function sendTurtle()
+-- Package everything in the turtle and send it to OUT_ADDRESS. With `keep` (slot -> count),
+-- anything beyond those counts arrived in the meantime and goes to the buffer first.
+local function sendTurtle(keep)
   pcall(packager.setAddress, OUT_ADDRESS)
   for _ = 1, 40 do
     if turtleEmpty() then
       state.sendFails = 0
       return true
+    end
+    if keep then
+      for i = 1, 16 do
+        local extra = turtle.getItemCount(i) - (keep[i] or 0)
+        if extra > 0 then
+          turtle.select(i)
+          dropToBuffer(extra)
+        end
+      end
+      turtle.select(1)
     end
     local ok, made = pcall(packager.makePackage)
     if not (ok and made) then sleep(0.5) end
@@ -347,33 +358,19 @@ local function craftBatch(job, n)
       if extra > 0 then turtle.select(GRID[i]) dropToBuffer(extra) end
     end
   end
-  for attempt = 1, 3 do
-    local stray = false
+  -- 3. craft exactly `crafts` in one go (a single turtle step, so nothing can land mid-craft);
+  -- a package arriving just before it is moved out of the way and the craft retried
+  local done = 0
+  for _ = 1, 3 do
     for i = 1, 16 do
       local wanted = IS_GRID[i] and job.recipe[IS_GRID[i]]
       if not wanted and turtle.getItemCount(i) > 0 then
         turtle.select(i)
         dropToBuffer()
-        stray = true
       end
     end
-    if not stray then break end
-  end
-
-  -- 3. craft; results land in slot 4 onwards
-  turtle.select(4)
-  local perOne = 0
-  for _, c in pairs(perCraft(job.recipe)) do perOne = perOne + c end
-  local done = 0
-  for _ = 1, 64 do
-    local gridLeft = 0
-    for i = 1, 9 do if job.recipe[i] then gridLeft = gridLeft + turtle.getItemCount(GRID[i]) end end
-    if gridLeft == 0 then break end
-    local before = gridLeft
-    if not turtle.craft() then break end
-    local after = 0
-    for i = 1, 9 do if job.recipe[i] then after = after + turtle.getItemCount(GRID[i]) end end
-    done = done + math.floor((before - after) / math.max(1, perOne) + 0.5)
+    turtle.select(4)
+    if turtle.craft(crafts) then done = crafts break end
   end
   turtle.select(1)
   if done <= 0 then
@@ -381,22 +378,26 @@ local function craftBatch(job, n)
     return 0
   end
 
-  -- 4. what's in the turtle now is the result (plus leftovers like empty buckets)
-  local results = {}
+  -- 4. read the results straight away (reading doesn't take a tick), then move everything
+  -- else, leftover ingredients and anything that arrives from now on, into the buffer
+  local keep, results = {}, {}
   for i = 1, 16 do
     local d = turtle.getItemDetail(i)
-    if d then
-      if IS_GRID[i] and job.recipe[IS_GRID[i]] == d.name then
-        turtle.select(i)
-        dropToBuffer()
-      else
-        results[d.name] = (results[d.name] or 0) + d.count
-      end
+    if d and not (IS_GRID[i] and job.recipe[IS_GRID[i]] == d.name) then
+      keep[i] = d.count
+      results[d.name] = (results[d.name] or 0) + d.count
+    end
+  end
+  for i = 1, 16 do
+    local extra = turtle.getItemCount(i) - (keep[i] or 0)
+    if extra > 0 then
+      turtle.select(i)
+      dropToBuffer(extra)
     end
   end
   turtle.select(1)
   recordCraft(job, results)
-  sendTurtle()
+  sendTurtle(keep)
   return done
 end
 
@@ -467,7 +468,13 @@ local function work()
       can = can - done
       job.waitingSince = now()
     end
-    if job.crafts <= 0 then jobs[key] = nil end
+    if job.crafts <= 0 then
+      jobs[key] = nil
+    elseif can <= 0 and now() - state.lastArrival > 60 and now() - (job.waitingSince or now()) > 60 then
+      -- its ingredients never came (or went back to storage): drop it, the gauge orders again
+      log("warn", "Gave up on " .. job.crafts .. "x " .. jobLabel(job) .. ": ingredients missing")
+      jobs[key] = nil
+    end
   end
   saveJobs()
   if state.returnAll then
