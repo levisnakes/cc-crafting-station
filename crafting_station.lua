@@ -13,7 +13,9 @@
 OUT_ADDRESS = "MB-Storage-In"  -- where finished items (and anything without a recipe) are sent
 CRAFT_ADDRESS = "MB-Crafting-In"  -- the shared address all crafting gauges send to
 BUSY_ADDRESS = nil             -- the input Frogport's address while busy; nil = CRAFT_ADDRESS .. "-Busy"
-INPUT_SIDE = "front"           -- the input Frogport (or, older layout, the input Packager)
+INPUT_SIDE = "front"           -- the input Frogport (or, older layout, the input Packager); also takes a
+                               -- network name like "Create_Frogport_3". Not found: it pairs by itself
+                               -- with the network Frogport whose packages land in its barrel.
 OUTPUT_SIDE = "back"           -- the Packager that sends the results
 QUIET_SECONDS = 1              -- wait this long after the last package, then craft everything at once
 STATION_NAME = nil             -- nil = the turtle's label, or "Station <id>"
@@ -96,12 +98,21 @@ local state = {
 
 -- ============================================================ peripherals
 
-local inputPackager, inputFrogport, outputPackager, buffer, bufferSide
+local inputPackager, inputFrogport, inputName, outputPackager, buffer, bufferSide
+local pairing = { candidates = {} }  -- network Frogport packages seen while unpaired
 
 local function findPeripherals()
-  inputPackager, inputFrogport, outputPackager, buffer, bufferSide = nil, nil, nil, nil, nil
-  if peripheral.hasType(INPUT_SIDE, "Create_Packager") then inputPackager = peripheral.wrap(INPUT_SIDE)
-  elseif peripheral.hasType(INPUT_SIDE, "Create_Frogport") then inputFrogport = peripheral.wrap(INPUT_SIDE) end
+  inputPackager, inputFrogport, inputName, outputPackager, buffer, bufferSide = nil, nil, nil, nil, nil, nil
+  if peripheral.hasType(INPUT_SIDE, "Create_Packager") then
+    inputPackager, inputName = peripheral.wrap(INPUT_SIDE), INPUT_SIDE
+  elseif peripheral.hasType(INPUT_SIDE, "Create_Frogport") then
+    inputFrogport, inputName = peripheral.wrap(INPUT_SIDE), INPUT_SIDE
+  else
+    local paired = readFile(DIR .. "/input", nil)
+    if type(paired) == "string" and peripheral.hasType(paired, "Create_Frogport") then
+      inputFrogport, inputName = peripheral.wrap(paired), paired
+    end
+  end
   if peripheral.hasType(OUTPUT_SIDE, "Create_Packager") then outputPackager = peripheral.wrap(OUTPUT_SIDE) end
   for _, side in ipairs({ "top", "bottom" }) do
     if not buffer and peripheral.hasType(side, "inventory") and not peripheral.hasType(side, "Create_Packager") then
@@ -110,10 +121,21 @@ local function findPeripherals()
   end
 end
 
+local function networkFrogports()
+  local out = {}
+  for _, name in ipairs(peripheral.getNames()) do
+    if peripheral.hasType(name, "Create_Frogport") then table.insert(out, name) end
+  end
+  return out
+end
+
 local function setupProblem()
   if not turtle then return "This program needs a turtle" end
   if not turtle.craft then return "No crafting table: use a Crafty Turtle" end
-  if not inputPackager and not inputFrogport then return "No input Frogport on the turtle's " .. INPUT_SIDE end
+  state.pairing = not inputPackager and not inputFrogport and #networkFrogports() > 0
+  if not inputPackager and not inputFrogport and not state.pairing then
+    return "No input Frogport on the turtle's " .. INPUT_SIDE .. " or its network"
+  end
   if not outputPackager then return "No output Packager on the turtle's " .. OUTPUT_SIDE end
   if not buffer then return "No Barrel on top of or under the turtle" end
   return nil
@@ -595,13 +617,67 @@ end
 
 -- ============================================================ loops
 
+local function itemsOf(pkg)
+  local got = {}
+  local ok, list = pcall(pkg.list)
+  if ok and type(list) == "table" then
+    for _, it in pairs(list) do
+      if type(it) == "table" and it.name then got[it.name] = (got[it.name] or 0) + (it.count or 0) end
+    end
+  end
+  return got
+end
+
+-- Unpaired: the network Frogport whose caught packages are exactly what landed in our barrel is ours.
+local function tryPair()
+  if not buffer or #pairing.candidates == 0 then return end
+  local counts = bufferCounts()
+  if next(counts) == nil then return end
+  local sums = {}
+  for _, c in ipairs(pairing.candidates) do
+    sums[c.name] = sums[c.name] or {}
+    for name, n in pairs(c.items) do sums[c.name][name] = (sums[c.name][name] or 0) + n end
+  end
+  local match
+  for name, sum in pairs(sums) do
+    local same = true
+    for item, n in pairs(sum) do if counts[item] ~= n then same = false end end
+    for item, n in pairs(counts) do if sum[item] ~= n then same = false end end
+    if same then
+      if match then return end  -- two Frogports fit: wait for a clearer package
+      match = name
+    end
+  end
+  if not match then return end
+  writeFile(DIR .. "/input", match)
+  findPeripherals()
+  log("info", "Paired with " .. match .. ", this station's input Frogport")
+  for _, c in ipairs(pairing.candidates) do
+    if c.name == match then pcall(onPackage, c.pkg) end
+  end
+  pairing.candidates = {}
+  setOpen(false)
+end
+
+local function unpair()
+  if fs.exists(DIR .. "/input") then fs.delete(DIR .. "/input") end
+  pairing.candidates = {}
+  findPeripherals()
+  log("info", "Forgot the input Frogport; pairing again with the next package")
+end
+
 local function eventLoop()
   while true do
     local e = { os.pullEvent() }
-    if e[1] == "package_received" and (type(e[2]) ~= "string" or e[2] == INPUT_SIDE) then
-      if inputFrogport then setOpen(false) end
-      for i = 2, #e do
-        if type(e[i]) == "table" then pcall(onPackage, e[i]) break end
+    if e[1] == "package_received" then
+      local from = type(e[2]) == "string" and e[2] or nil
+      local pkg
+      for i = 2, #e do if type(e[i]) == "table" then pkg = e[i] break end end
+      if pkg and inputName and (from == nil or from == inputName) then
+        if inputFrogport then setOpen(false) end
+        pcall(onPackage, pkg)
+      elseif pkg and not inputName and from and peripheral.hasType(from, "Create_Frogport") then
+        table.insert(pairing.candidates, { name = from, pkg = pkg, items = itemsOf(pkg), t = now() })
       end
     elseif e[1] == "peripheral" or e[1] == "peripheral_detach" then
       findPeripherals()
@@ -612,6 +688,10 @@ end
 local function workLoop()
   while true do
     state.problem = setupProblem()
+    if state.pairing and not state.problem then pcall(tryPair) end
+    for i = #pairing.candidates, 1, -1 do
+      if now() - pairing.candidates[i].t > 15 then table.remove(pairing.candidates, i) end
+    end
     local pending = next(jobs) ~= nil or state.looseItems or state.returnAll
     if state.problem then
       if inputFrogport then setOpen(false) end
@@ -624,6 +704,8 @@ local function workLoop()
       if not ok then log("error", "Error: " .. tostring(err)) end
     elseif pending then
       state.status = "Receiving..."
+    elseif state.pairing and #pairing.candidates > 0 then
+      state.status = "Pairing..."
     elseif now() - state.lastArrival > 5 and (not turtleEmpty() or (now() - (state.lastBufferCheck or 0) > 10 and not bufferEmpty())) then
       -- items with no order (after a restart, or a given-up order): send them home
       state.lastBufferCheck = now()
@@ -743,7 +825,9 @@ end
 local function drawHome(w, h)
   local y = 3
   local status, color = state.status, colors.lime
-  if status == "Ready" and inputFrogport then
+  if status == "Ready" and state.pairing then
+    status = "Ready, pairing with its Frogport on the first order"
+  elseif status == "Ready" and inputFrogport then
     status = state.advertised == CRAFT_ADDRESS and ("Ready, taking orders on " .. CRAFT_ADDRESS) or "Finishing up"
   end
   if state.problem then status, color = state.problem, colors.red
@@ -785,8 +869,15 @@ local function drawSetup(w, h)
     y = y + 1
   end
   row("Crafting", turtle and turtle.craft ~= nil, (turtle and turtle.craft) and "crafting table fitted" or "use a Crafty Turtle")
-  row("Input", inputPackager ~= nil or inputFrogport ~= nil, inputFrogport and ("Frogport " .. INPUT_SIDE)
-    or inputPackager and ("Packager " .. INPUT_SIDE) or ("Frogport on the " .. INPUT_SIDE))
+  if state.pairing then
+    put(2, y, "?", colors.yellow, colors.black)
+    put(4, y, "Input", colors.lightGray)
+    put(16, y, fit("pairing on the first order", w - 16), colors.yellow)
+    y = y + 1
+  else
+    row("Input", inputPackager ~= nil or inputFrogport ~= nil, inputFrogport and ("Frogport " .. inputName)
+      or inputPackager and ("Packager " .. inputName) or ("Frogport on the " .. INPUT_SIDE))
+  end
   if inputFrogport then row("Orders", true, state.advertised == CRAFT_ADDRESS and ("open: " .. CRAFT_ADDRESS) or "busy") end
   row("Output", outputPackager ~= nil, outputPackager and ("Packager " .. OUTPUT_SIDE) or ("Packager on the " .. OUTPUT_SIDE))
   row("Buffer", buffer ~= nil, buffer and ("barrel " .. bufferSide) or "barrel on top or under")
@@ -794,6 +885,10 @@ local function drawSetup(w, h)
   row("Discord", DISCORD_WEBHOOK ~= nil, DISCORD_WEBHOOK and (alerts.error and "error" or "stuck alerts on") or "off")
   row("Name", true, stationName())
   y = y + 1
+  if inputFrogport and inputName ~= INPUT_SIDE then
+    button(2, y, " Re-pair input Frogport ", colors.white, colors.gray, unpair)
+    y = y + 2
+  end
   put(2, y, fit("Input Frogport: the shared crafting", w - 2), colors.gray)
   put(2, y + 1, fit("address all your gauges send to.", w - 2), colors.gray)
 end
