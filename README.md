@@ -7,12 +7,12 @@ A Crafty Turtle that does the 3x3 crafting for Create 6 Factory Gauges, in place
 ```
                 [Barrel]                     on top of the turtle: the buffer it sorts ingredients in
  [Packager IN]  [Turtle]  [Packager OUT]     IN on the turtle's front, OUT on its back
- [Frogport]               [Frogport]         IN Frogport = shared crafting address (e.g. MB-Crafty-In)
+ [Frogport]               [Frogport]         IN Frogport = shared crafting address (e.g. MB-Crafting-In)
 ```
 
 - **Crafty Turtle** (turtle + crafting table).
 - **Input Packager on the turtle's front**, with a Frogport set to the shared crafting address. Ingredients arrive here.
-- **Output Packager on the turtle's back**, with its own Frogport. Give that Frogport an address nothing else uses (e.g. `MB-Crafty-Out`); results leave addressed to `OUT_ADDRESS`.
+- **Output Packager on the turtle's back**, with its own Frogport. Give that Frogport an address nothing else uses (e.g. `MB-Crafting-Out`); results leave addressed to `OUT_ADDRESS`.
 - **Barrel** on top of (or under) the turtle. Use barrels, not chests, so neighbouring stations don't merge into double chests.
 
 Tile stations side by side, turtle next to turtle. Every input Frogport gets the same address. `INPUT_SIDE` / `OUTPUT_SIDE` change which sides are which.
