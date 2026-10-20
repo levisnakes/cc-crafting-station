@@ -148,6 +148,7 @@ local function setupProblem()
     return "No input Frogport on the turtle's " .. INPUT_SIDE .. " or its network"
   end
   if not outputPackager then return "No output Packager on the turtle's " .. OUTPUT_SIDE end
+  if state.bounced then return "Output Frogport sends packages back: give it an unused address" end
   if not buffer then return "No Barrel on top of or under the turtle" end
   return nil
 end
@@ -464,6 +465,7 @@ end
 local function sendTurtle(keep)
   pcall(outputPackager.setAddress, OUT_ADDRESS)
   for _ = 1, 40 do
+    if state.bounced then return false end
     if turtleEmpty() then
       state.sendFails = 0
       return true
@@ -767,6 +769,13 @@ end
 local function eventLoop()
   while true do
     local e = { os.pullEvent() }
+    -- the output Packager unpacking means its Frogport handed our own package straight back
+    -- (its address matches OUT_ADDRESS): stop instead of sending the same items round forever
+    if e[1] == "package_received" and e[2] == OUTPUT_SIDE and not state.bounced then
+      state.bounced = true
+      log("error", "My output Frogport sent my package back! Its address must NOT be " .. OUT_ADDRESS
+        .. ": set it to something unused like MB-Crafting-Out, then restart me")
+    end
     -- any Packager on the modem network unpacking or packing: log it
     if (e[1] == "package_received" or e[1] == "package_created") and type(e[2]) == "string"
       and e[2] ~= OUTPUT_SIDE and peripheral.hasType(e[2], "Create_Packager") and type(e[3]) == "table" then
