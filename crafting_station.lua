@@ -43,7 +43,7 @@ end
 
 -- ============================================================ basics
 
-local VERSION = "1.2.0"
+local VERSION = "1.2.1"
 local DIR = "/station"
 local GRID = { 1, 2, 3, 5, 6, 7, 9, 10, 11 }
 local IS_GRID = {}       -- [turtle slot] = position 1..9 in the recipe
@@ -986,7 +986,7 @@ local function eventLoop()
       end
     elseif e[1] == "rednet_message" and e[4] == HEARTBEAT and type(e[3]) == "table" then
       local id = tonumber(e[3].id) or e[2]
-      if id and id ~= MY_ID then peers[id] = { t = now(), open = e[3].open == true } end
+      if id and id ~= MY_ID then peers[id] = { t = now(), open = e[3].open == true, name = tostring(e[3].name or ("Station " .. id)) } end
     elseif e[1] == "peripheral" or e[1] == "peripheral_detach" then
       findPeripherals()
       openModems()
@@ -1064,6 +1064,7 @@ local function workLoop()
         -- only one station takes orders at a time; if two opened together, the lower name keeps it
         local other = openStation()
         open = other == nil or (state.advertised == CRAFT_ADDRESS and other > MY_ID)
+        state.standbyFor = (not open and other) and peers[other].name or nil
       end
       setOpen(open, open and "taking orders" or "busy")
     end
@@ -1231,7 +1232,13 @@ local function drawHome(w, h)
   if status == "Ready" and state.pairing then
     status = "Ready, pairing with its Frogport on the first order"
   elseif status == "Ready" and inputFrogport then
-    status = state.advertised == CRAFT_ADDRESS and ("Ready, taking orders on " .. CRAFT_ADDRESS) or "Finishing up"
+    if state.advertised == CRAFT_ADDRESS then
+      status = "Ready, taking orders on " .. CRAFT_ADDRESS
+    elseif state.standbyFor then
+      status, color = "Standby: " .. state.standbyFor .. " is taking orders", colors.lightBlue
+    else
+      status = "Finishing up"
+    end
   end
   if state.problem then status, color = state.problem, colors.red
   elseif state.paused then color = colors.orange
@@ -1303,7 +1310,10 @@ local function drawSetup(w, h)
     row("Input", inputPackager ~= nil or inputFrogport ~= nil, inputFrogport and ("Frogport " .. inputName)
       or inputPackager and ("Packager " .. inputName) or ("Frogport on the " .. INPUT_SIDE))
   end
-  if inputFrogport then row("Orders", true, state.advertised == CRAFT_ADDRESS and ("open: " .. CRAFT_ADDRESS) or "busy") end
+  if inputFrogport then
+    row("Orders", true, state.advertised == CRAFT_ADDRESS and ("open: " .. CRAFT_ADDRESS)
+      or state.standbyFor and ("standby (" .. state.standbyFor .. " open)") or "busy")
+  end
   row("Output", outputPackager ~= nil, outputPackager and ("Packager " .. OUTPUT_SIDE) or ("Packager on the " .. OUTPUT_SIDE))
   row("Buffer", buffer ~= nil, buffer and ("barrel " .. bufferSide) or "barrel on top or under")
   row("Sends to", true, OUT_ADDRESS)
