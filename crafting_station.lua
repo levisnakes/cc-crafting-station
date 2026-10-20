@@ -43,7 +43,7 @@ end
 
 -- ============================================================ basics
 
-local VERSION = "1.2.1"
+local VERSION = "1.2.2"
 local DIR = "/station"
 local GRID = { 1, 2, 3, 5, 6, 7, 9, 10, 11 }
 local IS_GRID = {}       -- [turtle slot] = position 1..9 in the recipe
@@ -131,7 +131,9 @@ local pairing = { candidates = {} }  -- network Frogport packages seen while unp
 
 local function findPeripherals()
   inputPackager, inputFrogport, inputName, outputPackager, buffer, bufferSide = nil, nil, nil, nil, nil, nil
-  for _, side in ipairs({ INPUT_SIDE, "front" }) do
+  -- a Frogport touching the turtle's front always wins: a network name in station.lua may be
+  -- stale and belong to another station's Frogport by now
+  for _, side in ipairs({ "front", INPUT_SIDE }) do
     if not inputName and peripheral.hasType(side, "Create_Packager") and side ~= OUTPUT_SIDE then
       inputPackager, inputName = peripheral.wrap(side), side
     elseif not inputName and peripheral.hasType(side, "Create_Frogport") then
@@ -206,11 +208,12 @@ end
 -- Another running station's input Frogport that is taking orders right now.
 local MY_ID = os.getComputerID()
 
--- The lowest computer id among other running stations that are taking orders right now.
-local function openStation()
+-- The lowest computer id among other running stations that are taking orders right now
+-- (or, with idleToo, that are idle and could take them).
+local function openStation(idleToo)
   local found
   for id, p in pairs(peers) do
-    if id ~= MY_ID and p.open and now() - p.t < 6 and (not found or id < found) then found = id end
+    if id ~= MY_ID and (p.open or (idleToo and p.idle)) and now() - p.t < 6 and (not found or id < found) then found = id end
   end
   return found
 end
@@ -218,7 +221,7 @@ end
 local function heartbeat()
   if not inputFrogport then return end
   state.lastBeat = now()
-  pcall(rednet.broadcast, { id = MY_ID, open = state.advertised == CRAFT_ADDRESS, name = stationName() }, HEARTBEAT)
+  pcall(rednet.broadcast, { id = MY_ID, open = state.advertised == CRAFT_ADDRESS, idle = state.idle == true, name = stationName() }, HEARTBEAT)
 end
 
 local function frogportEmpty()
@@ -986,7 +989,9 @@ local function eventLoop()
       end
     elseif e[1] == "rednet_message" and e[4] == HEARTBEAT and type(e[3]) == "table" then
       local id = tonumber(e[3].id) or e[2]
-      if id and id ~= MY_ID then peers[id] = { t = now(), open = e[3].open == true, name = tostring(e[3].name or ("Station " .. id)) } end
+      if id and id ~= MY_ID then
+        peers[id] = { t = now(), open = e[3].open == true, idle = e[3].idle == true, name = tostring(e[3].name or ("Station " .. id)) }
+      end
     elseif e[1] == "peripheral" or e[1] == "peripheral_detach" then
       findPeripherals()
       openModems()
@@ -1057,13 +1062,24 @@ local function workLoop()
     if inputFrogport and #landing == 0 then
       local idle = not state.problem and not state.paused and not state.busy and next(jobs) == nil
         and now() - state.lastArrival > 0.5 and turtleEmpty() and frogportEmpty() and bufferEmpty()
+      if idle ~= state.idle then
+        state.idle = idle
+        state.lastBeat = 0  -- tell the others straight away
+      end
       local open = false
       if not state.problem and waitingForRest() then
         open = true  -- the rest of an order is on its way: keep taking it here
       elseif idle then
-        -- only one station takes orders at a time; if two opened together, the lower name keeps it
+        -- only one station takes orders at a time. When none is open, the idle station with the
+        -- lowest id opens; if two are open anyway, the lower id keeps it.
         local other = openStation()
-        open = other == nil or (state.advertised == CRAFT_ADDRESS and other > MY_ID)
+        if state.advertised == CRAFT_ADDRESS then
+          open = other == nil or other > MY_ID
+        else
+          local first = openStation(true)
+          open = other == nil and (first == nil or first > MY_ID)
+          other = other or first
+        end
         state.standbyFor = (not open and other) and peers[other].name or nil
       end
       setOpen(open, open and "taking orders" or "busy")
