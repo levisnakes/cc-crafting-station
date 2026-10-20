@@ -393,6 +393,10 @@ end
 -- until every order it started is complete, so an order is never split between stations.
 local ORDER_WAIT_SECONDS = 30
 local orders = {}
+-- Packages the Frogport caught whose items aren't in the barrel yet. While any are on their way
+-- down, the Frogport's address must not change: a package that lands in a Frogport whose address
+-- no longer matches is sent straight back out onto the chain.
+local landing = {}
 
 local function trackOrder(order, pkg)
   local okI, id = pcall(order.getOrderID)
@@ -897,7 +901,7 @@ local function eventLoop()
       for i = 2, #e do if type(e[i]) == "table" then pkg = e[i] break end end
       if pkg and inputName and (from == nil or from == inputName) then
         pcall(onPackage, pkg)
-        if inputFrogport and not waitingForRest() then setOpen(false) end
+        if inputFrogport then table.insert(landing, { items = itemsOf(pkg), t = now() }) end
       elseif pkg and not inputName and from and peripheral.hasType(from, "Create_Frogport") then
         table.insert(pairing.candidates, { name = from, pkg = pkg, items = itemsOf(pkg), t = now() })
       end
@@ -917,6 +921,26 @@ local function workLoop()
         local t = 0
         for slot = 1, 16 do t = t + turtle.getItemCount(slot) end
         log("info", "Barrel " .. n .. ", turtle " .. t .. ", Frogport " .. (frogportEmpty() and "empty" or "has pkg"))
+      end
+    end
+    if #landing > 0 then
+      -- have the caught packages' items reached the barrel (or turtle) yet?
+      local have = buffer and bufferCounts() or {}
+      for name, n in pairs(turtleCounts()) do have[name] = (have[name] or 0) + n end
+      local want = {}
+      for _, l in ipairs(landing) do
+        for name, n in pairs(l.items) do want[name] = (want[name] or 0) + n end
+      end
+      local all = true
+      for name, n in pairs(want) do if (have[name] or 0) < n then all = false end end
+      if all then
+        dbg("caught items are in my barrel: " .. fmtCounts(want))
+        landing = {}
+        -- safe to change the address now; go busy unless more of the order is still coming
+        if inputFrogport and not waitingForRest() then setOpen(false, "order is in, crafting") end
+      elseif now() - landing[1].t > 30 then
+        dbg("caught items not in my barrel after 30 s (wanted " .. fmtCounts(want) .. ", have " .. fmtCounts(have) .. ")")
+        landing = {}
       end
     end
     state.problem = setupProblem()
@@ -950,7 +974,7 @@ local function workLoop()
       state.status = "Ready"
     end
     if not state.pairing or bufferEmpty() then state.pairingWait = nil end
-    if inputFrogport then
+    if inputFrogport and #landing == 0 then
       local idle = not state.problem and not state.paused and not state.busy and next(jobs) == nil
         and now() - state.lastArrival > 0.5 and turtleEmpty() and frogportEmpty() and bufferEmpty()
       local open = false
@@ -961,7 +985,7 @@ local function workLoop()
         local other = openStation()
         open = other == nil or (state.advertised == CRAFT_ADDRESS and other > inputName)
       end
-      setOpen(open)
+      setOpen(open, open and "taking orders" or "busy")
     end
     if state.status ~= state.lastLoggedStatus then
       dbg("status: " .. tostring(state.status) .. (state.problem and (" | problem: " .. state.problem) or ""))
