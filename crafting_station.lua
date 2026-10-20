@@ -20,6 +20,8 @@ OUTPUT_SIDE = "back"           -- the Packager that sends the results
 TAKE_TURNS = false             -- false: every station keeps CRAFT_ADDRESS and Create spreads the load (a busy
                                -- station's Frogport fills up and the chain moves on). true: one station takes
                                -- orders at a time (slower: the chain needs ~5 s to notice address changes)
+MAX_QUEUE = 2                  -- packages a station keeps waiting in its Frogport; past that it goes busy and
+                               -- the extra ones go back onto the chain to other stations
 QUIET_SECONDS = 1              -- wait this long after the last package, then craft everything at once
 STATION_NAME = nil             -- nil = the turtle's label, or "Station <id>"
 DISCORD_WEBHOOK = nil          -- Discord webhook URL (in quotes) for "stuck" alerts
@@ -46,7 +48,7 @@ end
 
 -- ============================================================ basics
 
-local VERSION = "1.3.1"
+local VERSION = "1.4.0"
 local DIR = "/station"
 local GRID = { 1, 2, 3, 5, 6, 7, 9, 10, 11 }
 local IS_GRID = {}       -- [turtle slot] = position 1..9 in the recipe
@@ -752,6 +754,34 @@ local function clearInbox()
   if moved > 0 then dbg("cleared barrel slots 1-9 (" .. moved .. " stacks moved up) for the next order") end
 end
 
+-- Default mode (TAKE_TURNS = false): open by default; busy while too many packages wait in the
+-- Frogport and the station has work of its own (they go back onto the chain to the other
+-- stations); open again once the queue is gone and at most one order is left.
+local function gate()
+  if not inputFrogport or TAKE_TURNS or #landing > 0 then return end
+  local okF, fl = pcall(inputFrogport.list)
+  local queue = 0
+  if okF and type(fl) == "table" then for _ in pairs(fl) do queue = queue + 1 end end
+  local orders, working = 0, state.busy
+  local counts = buffer and bufferCounts() or {}
+  for name, n in pairs(turtleCounts()) do counts[name] = (counts[name] or 0) + n end
+  for _, job in pairs(jobs) do
+    orders = orders + 1
+    local can = job.crafts
+    for name, per in pairs(perCraft(job.recipe)) do can = math.min(can, math.floor((counts[name] or 0) / per)) end
+    if can > 0 then working = true end
+  end
+  if state.problem or state.paused then
+    setOpen(false, state.paused and "paused" or "setup problem")
+  elseif queue >= MAX_QUEUE and working then
+    setOpen(false, queue .. " packages waiting: the rest go to other stations")
+  elseif state.advertised ~= CRAFT_ADDRESS and queue == 0 and orders <= 1 then
+    setOpen(true, "room for more")
+  elseif state.advertised == nil then
+    setOpen(true, "taking orders")
+  end
+end
+
 local function returnLeftovers()
   if not parkAll() then
     -- the barrel is full: send what the turtle holds first, then keep emptying the barrel
@@ -811,6 +841,7 @@ local function work()
       local n = math.min(can, limit)
       state.status = "Crafting " .. n .. "x " .. jobLabel(job)
       local done = craftBatch(job, n)
+      pcall(gate)
       if done <= 0 then
         job.fails = (job.fails or 0) + 1
         if job.fails >= 3 then
@@ -1051,7 +1082,7 @@ local function workLoop()
       if TAKE_TURNS and landed and inputFrogport and not waitingForRest() then setOpen(false, "order is in, crafting") end
     end
     for i = #recentlyLanded, 1, -1 do
-      if now() - recentlyLanded[i].landedAt > 15 then table.remove(recentlyLanded, i) end
+      if now() - recentlyLanded[i].landedAt > 120 then table.remove(recentlyLanded, i) end
     end
     state.problem = setupProblem()
     if state.pairing and not state.problem then pcall(tryPair) end
@@ -1086,7 +1117,7 @@ local function workLoop()
     if not state.pairing or bufferEmpty() then state.pairingWait = nil end
     if inputFrogport and #landing == 0 and not TAKE_TURNS then
       -- always open (unless paused or not set up): Create's own backpressure shares the work
-      setOpen(not state.problem and not state.paused, state.paused and "paused" or state.problem and "setup problem" or "taking orders")
+      gate()
     elseif inputFrogport and #landing == 0 then
       local idle = not state.problem and not state.paused and not state.busy and next(jobs) == nil
         and now() - state.lastArrival > 0.5 and turtleEmpty() and frogportEmpty() and bufferEmpty()
