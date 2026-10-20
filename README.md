@@ -12,7 +12,7 @@ A Crafty Turtle that does the 3x3 crafting for Create 6 Factory Gauges, in place
 - **Crafty Turtle** (turtle + crafting table).
 - **Barrel under the turtle.** Ingredients are unpacked into it.
 - **Input Packager** attached to that Barrel (place it against the Barrel's side, in front of the turtle).
-- **Input Frogport** on top of the input Packager, so it touches the turtle's front. Its address is managed by the turtle: `CRAFT_ADDRESS` (default `MB-Crafting-In`) while the station is empty, `MB-Crafting-In-Busy` while it works. That's how several stations on one address share the work: a busy station drops off the address and the chain carries packages on to a free one.
+- **Input Frogport** on top of the input Packager, so it touches the turtle's front. The turtle keeps its address at `CRAFT_ADDRESS` (default `MB-Crafting-In`). Several stations on one address share the work through Create itself: the input Packager only unpacks when the barrel has room, so a busy station's Frogport fills up and the chain carries packages on to the next station. (`TAKE_TURNS = true` makes stations take orders one at a time instead; slower, because the chain needs ~5 s to notice address changes.)
 - **Output Packager on the turtle's back**, with its own Frogport (any unused address, e.g. `MB-Crafting-Out`). Results leave addressed to `OUT_ADDRESS`.
 
 Tile stations side by side, turtle next to turtle. Use barrels, not chests, so neighbours don't merge.

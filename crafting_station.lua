@@ -17,6 +17,9 @@ INPUT_SIDE = "front"           -- the input Frogport (or, older layout, the inpu
                                -- network name like "Create_Frogport_3". Not found: it pairs by itself
                                -- with the network Frogport whose packages land in its barrel.
 OUTPUT_SIDE = "back"           -- the Packager that sends the results
+TAKE_TURNS = false             -- false: every station keeps CRAFT_ADDRESS and Create spreads the load (a busy
+                               -- station's Frogport fills up and the chain moves on). true: one station takes
+                               -- orders at a time (slower: the chain needs ~5 s to notice address changes)
 QUIET_SECONDS = 1              -- wait this long after the last package, then craft everything at once
 STATION_NAME = nil             -- nil = the turtle's label, or "Station <id>"
 DISCORD_WEBHOOK = nil          -- Discord webhook URL (in quotes) for "stuck" alerts
@@ -43,7 +46,7 @@ end
 
 -- ============================================================ basics
 
-local VERSION = "1.2.2"
+local VERSION = "1.3.0"
 local DIR = "/station"
 local GRID = { 1, 2, 3, 5, 6, 7, 9, 10, 11 }
 local IS_GRID = {}       -- [turtle slot] = position 1..9 in the recipe
@@ -1023,7 +1026,7 @@ local function workLoop()
       end
       -- go busy once one package is in (unless more of its order is still coming); anything
       -- still in the air goes back onto the chain and is handled by the package_sent event
-      if landed and inputFrogport and not waitingForRest() then setOpen(false, "order is in, crafting") end
+      if TAKE_TURNS and landed and inputFrogport and not waitingForRest() then setOpen(false, "order is in, crafting") end
     end
     for i = #recentlyLanded, 1, -1 do
       if now() - recentlyLanded[i].landedAt > 15 then table.remove(recentlyLanded, i) end
@@ -1059,7 +1062,10 @@ local function workLoop()
       state.status = "Ready"
     end
     if not state.pairing or bufferEmpty() then state.pairingWait = nil end
-    if inputFrogport and #landing == 0 then
+    if inputFrogport and #landing == 0 and not TAKE_TURNS then
+      -- always open (unless paused or not set up): Create's own backpressure shares the work
+      setOpen(not state.problem and not state.paused, state.paused and "paused" or state.problem and "setup problem" or "taking orders")
+    elseif inputFrogport and #landing == 0 then
       local idle = not state.problem and not state.paused and not state.busy and next(jobs) == nil
         and now() - state.lastArrival > 0.5 and turtleEmpty() and frogportEmpty() and bufferEmpty()
       if idle ~= state.idle then
