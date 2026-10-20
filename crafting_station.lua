@@ -43,7 +43,7 @@ end
 
 -- ============================================================ basics
 
-local VERSION = "1.0.0"
+local VERSION = "1.1.0"
 local DIR = "/station"
 local GRID = { 1, 2, 3, 5, 6, 7, 9, 10, 11 }
 local IS_GRID = {}       -- [turtle slot] = position 1..9 in the recipe
@@ -404,6 +404,8 @@ local orders = {}
 -- down, the Frogport's address must not change: a package that lands in a Frogport whose address
 -- no longer matches is sent straight back out onto the chain.
 local landing = {}
+local LAND_SECONDS = 2   -- a caught package that hasn't been sent away by then has gone down to the barrel
+local recentlyLanded = {} -- kept a while, in case the Frogport still sends one of them away
 
 local function trackOrder(order, pkg)
   local okI, id = pcall(order.getOrderID)
@@ -511,6 +513,7 @@ local function onPackage(pkg)
   end
   -- what's in the box: a bulk order (no Repackager) holds many crafts' worth even though
   -- its recipe says "craft 1", so the number of crafts comes from the items themselves
+  local touched = {}
   local got = {}
   local okL, contents = pcall(pkg.list)
   if okL and type(contents) == "table" then
@@ -525,6 +528,7 @@ local function onPackage(pkg)
       recipe[i] = (type(name) == "string" and name ~= "minecraft:air") and name or false
     end
     local key = recipeKey(recipe)
+    touched[#touched + 1] = key
     local job = jobs[key]
     if not job then
       job = { recipe = recipe, crafts = 0, since = now() }
@@ -549,6 +553,12 @@ local function onPackage(pkg)
     dbg("job " .. jobLabel(job) .. " [" .. key .. "]: received " .. fmtCounts(job.received) .. " -> " .. job.crafts .. " crafts")
   end
   saveJobs()
+  local orderId
+  if okO and type(order) == "table" then
+    local okI, id = pcall(order.getOrderID)
+    if okI then orderId = id end
+  end
+  return touched, orderId
 end
 
 -- ============================================================ sending
@@ -709,7 +719,10 @@ end
 -- Send everything in the turtle and the barrel back to storage (only called with no orders
 -- waiting, or for "Send all back").
 local function returnLeftovers()
-  if not parkAll() then return end
+  if not parkAll() then
+    -- the barrel is full: send what the turtle holds first, then keep emptying the barrel
+    sendTurtle()
+  end
   dbg("LEFTOVERS: " .. snapshot())
   local any = false
   for _ = 1, 60 do
@@ -877,9 +890,45 @@ local function peripheralLabel(name)
   return (tostring(name):gsub("^Create_", ""))
 end
 
+local function sameCounts(a, b)
+  for k, v in pairs(a or {}) do if (b or {})[k] ~= v then return false end end
+  for k, v in pairs(b or {}) do if (a or {})[k] ~= v then return false end end
+  return true
+end
+
+-- A caught package whose items will never arrive here: take it out of its jobs and order again,
+-- so nothing waits for it. The chain delivers it to an open station instead.
+local function undoPackage(entry, why)
+  for _, key in ipairs(entry.keys or {}) do
+    local job = jobs[key]
+    if job and job.received then
+      for name, n in pairs(entry.items or {}) do
+        if job.received[name] then job.received[name] = math.max(0, job.received[name] - n) end
+      end
+      job.crafts = craftsFromReceived(job)
+      if job.crafts <= 0 then jobs[key] = nil end
+    end
+  end
+  if entry.order ~= nil and orders[entry.order] then
+    local total = 0
+    for _, n in pairs(entry.items or {}) do total = total + n end
+    orders[entry.order].got = orders[entry.order].got - total
+    if orders[entry.order].got <= 0 then orders[entry.order] = nil end
+  end
+  saveJobs()
+  log("info", "A package went back onto the chain (" .. why .. "): " .. fmtCounts(entry.items))
+end
+
 local function eventLoop()
   while true do
     local e = { os.pullEvent() }
+    -- our Frogport caught a package: note it before anything else can yield, so the address
+    -- isn't changed while the package is still landing
+    local caught
+    if e[1] == "package_received" and inputFrogport and e[2] == inputName then
+      caught = { t = now() }
+      table.insert(landing, caught)
+    end
     if e[1] == "package_received" or e[1] == "package_created" or e[1] == "package_sent" then
       local tbl
       for i = 2, #e do if type(e[i]) == "table" then tbl = e[i] break end end
@@ -907,10 +956,26 @@ local function eventLoop()
       local pkg
       for i = 2, #e do if type(e[i]) == "table" then pkg = e[i] break end end
       if pkg and inputName and (from == nil or from == inputName) then
-        pcall(onPackage, pkg)
-        if inputFrogport then table.insert(landing, { items = itemsOf(pkg), t = now() }) end
+        local items = itemsOf(pkg)
+        local ok, keys, orderId = pcall(onPackage, pkg)
+        if caught then
+          caught.items = items
+          if ok then caught.keys, caught.order = keys, orderId end
+        end
       elseif pkg and not inputName and from and peripheral.hasType(from, "Create_Frogport") then
         table.insert(pairing.candidates, { name = from, pkg = pkg, items = itemsOf(pkg), t = now() })
+      end
+    elseif e[1] == "package_sent" and inputFrogport and e[2] == inputName and type(e[3]) == "table" then
+      -- our input Frogport sent a package away: one we caught that was still landing when we went busy
+      local items = itemsOf(e[3])
+      local found = false
+      for _, list in ipairs({ landing, recentlyLanded }) do
+        for i, l in ipairs(list) do
+          if not found and l.items and sameCounts(l.items, items) then
+            undoPackage(table.remove(list, i), "it was still landing when I went busy")
+            found = true
+          end
+        end
       end
     elseif e[1] == "rednet_message" and e[4] == HEARTBEAT and type(e[3]) == "table" and type(e[3].frog) == "string" then
       peers[e[3].frog] = now()
@@ -934,24 +999,21 @@ local function workLoop()
       end
     end
     if #landing > 0 then
-      -- have the caught packages' items reached the barrel (or turtle) yet?
-      local have = buffer and bufferCounts() or {}
-      for name, n in pairs(turtleCounts()) do have[name] = (have[name] or 0) + n end
-      local want = {}
-      for _, l in ipairs(landing) do
-        for name, n in pairs(l.items) do want[name] = (want[name] or 0) + n end
+      -- a caught package has landed once LAND_SECONDS pass without the Frogport sending it away
+      local landed = false
+      while landing[1] and landing[1].items and now() - landing[1].t >= LAND_SECONDS do
+        local l = table.remove(landing, 1)
+        l.landedAt = now()
+        table.insert(recentlyLanded, l)
+        dbg("landed: " .. fmtCounts(l.items))
+        landed = true
       end
-      local all = true
-      for name, n in pairs(want) do if (have[name] or 0) < n then all = false end end
-      if all then
-        dbg("caught items are in my barrel: " .. fmtCounts(want))
-        landing = {}
-        -- safe to change the address now; go busy unless more of the order is still coming
-        if inputFrogport and not waitingForRest() then setOpen(false, "order is in, crafting") end
-      elseif now() - landing[1].t > 30 then
-        dbg("caught items not in my barrel after 30 s (wanted " .. fmtCounts(want) .. ", have " .. fmtCounts(have) .. ")")
-        landing = {}
-      end
+      -- go busy once one package is in (unless more of its order is still coming); anything
+      -- still in the air goes back onto the chain and is handled by the package_sent event
+      if landed and inputFrogport and not waitingForRest() then setOpen(false, "order is in, crafting") end
+    end
+    for i = #recentlyLanded, 1, -1 do
+      if now() - recentlyLanded[i].landedAt > 15 then table.remove(recentlyLanded, i) end
     end
     state.problem = setupProblem()
     if state.pairing and not state.problem then pcall(tryPair) end
