@@ -84,6 +84,16 @@ local logLines = {}
 local function log(kind, text)
   table.insert(logLines, 1, { t = now(), kind = kind, text = text })
   while #logLines > 40 do table.remove(logLines) end
+  pcall(function()
+    local path = DIR .. "/log.txt"
+    if fs.exists(path) and fs.getSize(path) > 20000 then
+      if fs.exists(path .. ".old") then fs.delete(path .. ".old") end
+      fs.move(path, path .. ".old")
+    end
+    local f = fs.open(path, "a")
+    f.writeLine(os.date("!%H:%M:%S") .. " " .. text)
+    f.close()
+  end)
 end
 
 local state = {
@@ -738,9 +748,35 @@ local function unpair()
   log("info", "Forgot the input Frogport; pairing again with the next package")
 end
 
+-- Trace: where do an order's items go after the Frogport catches it?
+local trace = { checks = {} }  -- { at = time, label = text }
+
+local function itemTotal(pkg)
+  local n = 0
+  local ok, list = pcall(pkg.list)
+  if ok and type(list) == "table" then
+    for _, it in pairs(list) do if type(it) == "table" then n = n + (it.count or 0) end end
+  end
+  return n
+end
+
+local function peripheralLabel(name)
+  return (tostring(name):gsub("^Create_", ""))
+end
+
 local function eventLoop()
   while true do
     local e = { os.pullEvent() }
+    -- any Packager on the modem network unpacking or packing: log it
+    if (e[1] == "package_received" or e[1] == "package_created") and type(e[2]) == "string"
+      and e[2] ~= OUTPUT_SIDE and peripheral.hasType(e[2], "Create_Packager") and type(e[3]) == "table" then
+      log("info", peripheralLabel(e[2]) .. (e[1] == "package_received" and " unpacked " or " packed ") .. itemTotal(e[3]) .. " items")
+    end
+    if e[1] == "package_received" and inputName and e[2] == inputName and type(e[3]) == "table" then
+      log("info", "Frogport caught " .. itemTotal(e[3]) .. " items")
+      table.insert(trace.checks, { at = now() + 2 })
+      table.insert(trace.checks, { at = now() + 6 })
+    end
     if e[1] == "package_received" then
       local from = type(e[2]) == "string" and e[2] or nil
       local pkg
@@ -759,6 +795,16 @@ end
 
 local function workLoop()
   while true do
+    for i = #trace.checks, 1, -1 do
+      if now() >= trace.checks[i].at then
+        table.remove(trace.checks, i)
+        local n = 0
+        if buffer then for _, c in pairs(bufferCounts()) do n = n + c end end
+        local t = 0
+        for slot = 1, 16 do t = t + turtle.getItemCount(slot) end
+        log("info", "Barrel " .. n .. ", turtle " .. t .. ", Frogport " .. (frogportEmpty() and "empty" or "has pkg"))
+      end
+    end
     state.problem = setupProblem()
     if state.pairing and not state.problem then pcall(tryPair) end
     for i = #pairing.candidates, 1, -1 do
