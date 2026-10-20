@@ -865,6 +865,23 @@ local function drawHome(w, h)
   if shown > 3 then put(3, y, "+" .. (shown - 3) .. " more", colors.gray) y = y + 1 end
   y = y + 1
 
+  if inputFrogport then
+    local okF, fl = pcall(inputFrogport.list)
+    local waiting = 0
+    if okF and type(fl) == "table" then for _ in pairs(fl) do waiting = waiting + 1 end end
+    local inBarrel = 0
+    for _, n in pairs(buffer and bufferCounts() or {}) do inBarrel = inBarrel + n end
+    put(2, y, "In Frogport ", colors.lightGray)
+    put(14, y, waiting .. " pkg", waiting > 0 and colors.orange or colors.white)
+    put(22, y, "Barrel ", colors.lightGray)
+    put(29, y, inBarrel .. " items", colors.white)
+    y = y + 1
+    if waiting > 0 and inBarrel == 0 and now() - state.lastArrival > 10 then
+      put(2, y, fit("Frogport can't pass packages down: is the", w - 2), colors.orange)
+      put(2, y + 1, fit("input Packager right under it, on my barrel?", w - 2), colors.orange)
+      y = y + 2
+    end
+  end
   put(2, y, "Today ", colors.lightGray)
   put(8, y, tostring(stats.today), colors.white)
   put(16, y, "All time ", colors.lightGray)
