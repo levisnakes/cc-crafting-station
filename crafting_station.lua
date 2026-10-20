@@ -549,7 +549,14 @@ local function returnLeftovers()
   end
   turtle.select(1)
   if not turtleEmpty() then sendTurtle() end
-  if any then log("info", "Sent leftover items back to " .. OUT_ADDRESS) end
+  if any then
+    if state.unordered then
+      log("warn", "Items I never ordered landed in my barrel: another station's Packager feeds it? Sent them to " .. OUT_ADDRESS)
+    else
+      log("info", "Sent leftover items back to " .. OUT_ADDRESS)
+    end
+  end
+  state.unordered = false
 end
 
 local function bufferEmpty()
@@ -598,7 +605,10 @@ local function work()
       jobs[key] = nil
     elseif can <= 0 and now() - state.lastArrival > 60 and now() - (job.waitingSince or now()) > 60 then
       -- its ingredients never came (or went back to storage): drop it, the gauge orders again
-      log("warn", "Gave up on " .. job.crafts .. "x " .. jobLabel(job) .. ": ingredients missing")
+      log("warn", "Gave up on " .. job.crafts .. "x " .. jobLabel(job) .. ": its items never reached my barrel")
+      if inputFrogport then
+        log("warn", "Check " .. tostring(inputName) .. " is MY Frogport and its Packager feeds MY barrel")
+      end
       jobs[key] = nil
     end
   end
@@ -712,6 +722,7 @@ local function workLoop()
     elseif now() - state.lastArrival > 5 and (not turtleEmpty() or (now() - (state.lastBufferCheck or 0) > 10 and not bufferEmpty())) then
       -- items with no order (after a restart, or a given-up order): send them home
       state.lastBufferCheck = now()
+      state.unordered = now() - state.lastArrival > 30 and not bufferEmpty()
       pcall(work)
       state.busy = false
     else
