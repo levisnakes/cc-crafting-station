@@ -54,3 +54,13 @@ At the top of the file, or in `/config.lua` (survives updates; can be shared by 
 Tabs **Status / Setup / Log** (click, or keys 1 2 3). **Send all back** (or S) sends everything in the turtle and barrel to storage; **Pause** (or P) stops crafting.
 
 `probe.lua` is the setup test used while building this.
+
+## Reboot every station from one turtle
+
+Install on any one station (it reaches the others through the modem network):
+
+```
+wget https://raw.githubusercontent.com/levisnakes/cc-crafting-station/main/rebootall.lua rebootall.lua
+```
+
+`rebootall` lists the turtles on the network and asks, then reboots them all and this one last (turtles that are off are turned on). `rebootall -y` skips the question; `rebootall others` leaves this turtle running.
