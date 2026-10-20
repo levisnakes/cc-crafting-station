@@ -46,7 +46,7 @@ end
 
 -- ============================================================ basics
 
-local VERSION = "1.3.0"
+local VERSION = "1.3.1"
 local DIR = "/station"
 local GRID = { 1, 2, 3, 5, 6, 7, 9, 10, 11 }
 local IS_GRID = {}       -- [turtle slot] = position 1..9 in the recipe
@@ -731,6 +731,27 @@ end
 
 -- Send everything in the turtle and the barrel back to storage (only called with no orders
 -- waiting, or for "Send all back").
+-- Arranged packages unpack into barrel slots 1-9 and only when those are free, so move what's
+-- there up to slots 10+: the next order can then unpack while this one is being crafted.
+local function clearInbox()
+  if not buffer then return end
+  local okS, size = pcall(buffer.size)
+  if not okS or not size or size <= 9 then return end
+  local ok, list = pcall(buffer.list)
+  if not ok or type(list) ~= "table" then return end
+  local free = {}
+  for slot = size, 10, -1 do if not list[slot] then table.insert(free, slot) end end
+  local moved = 0
+  for slot = 1, 9 do
+    if list[slot] and #free > 0 then
+      local target = table.remove(free)
+      local okP, n = pcall(buffer.pushItems, bufferSide, slot, 64, target)
+      if okP and n and n > 0 then moved = moved + 1 end
+    end
+  end
+  if moved > 0 then dbg("cleared barrel slots 1-9 (" .. moved .. " stacks moved up) for the next order") end
+end
+
 local function returnLeftovers()
   if not parkAll() then
     -- the barrel is full: send what the turtle holds first, then keep emptying the barrel
@@ -770,6 +791,7 @@ end
 
 local function work()
   state.busy = true
+  pcall(clearInbox)
   do
     local js = {}
     for _, job in pairs(jobs) do js[#js + 1] = job.crafts .. "x " .. jobLabel(job) end
