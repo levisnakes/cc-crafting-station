@@ -154,6 +154,28 @@ local function setOpen(open)
   end
 end
 
+-- Another station's input Frogport that is taking orders right now (they share the modem network).
+local stationCache = { names = {}, t = 0 }
+
+local function openStation()
+  if now() - stationCache.t > 10 then
+    stationCache.names, stationCache.t = {}, now()
+    for _, name in ipairs(peripheral.getNames()) do
+      if name ~= inputName and peripheral.hasType(name, "Create_Frogport") then table.insert(stationCache.names, name) end
+    end
+  end
+  local found
+  local tasks = {}
+  for _, name in ipairs(stationCache.names) do
+    tasks[#tasks + 1] = function()
+      local ok, address = pcall(peripheral.call, name, "getAddress")
+      if ok and address == CRAFT_ADDRESS and (not found or name < found) then found = name end
+    end
+  end
+  if #tasks > 0 then parallel.waitForAll(table.unpack(tasks)) end
+  return found
+end
+
 local function frogportEmpty()
   if not inputFrogport then return true end
   local ok, list = pcall(inputFrogport.list)
@@ -311,9 +333,48 @@ local function jobLabel(job)
   return job.output and short(job.output) or ("recipe with " .. short(next(perCraft(job.recipe)) or "?"))
 end
 
+-- An order too big for one package arrives as several. orders[id] = { need = items in the whole
+-- order, got = items caught here so far, t = first seen }; the station keeps taking packages
+-- until every order it started is complete, so an order is never split between stations.
+local ORDER_WAIT_SECONDS = 30
+local orders = {}
+
+local function trackOrder(order, pkg)
+  local okI, id = pcall(order.getOrderID)
+  if not okI or id == nil then return end
+  local need = 0
+  local okL, list = pcall(order.list)
+  if okL and type(list) == "table" then
+    for _, it in pairs(list) do
+      if type(it) == "table" and it.name and it.name ~= "minecraft:air"
+        and it.name ~= "createfactorycontroller:arrangement_marker" then
+        need = need + (it.count or 0)
+      end
+    end
+  end
+  local got = 0
+  local okP, items = pcall(pkg.list)
+  if okP and type(items) == "table" then
+    for _, it in pairs(items) do if type(it) == "table" then got = got + (it.count or 0) end end
+  end
+  local o = orders[id] or { need = 0, got = 0, t = now() }
+  if need > o.need then o.need = need end
+  o.got = o.got + got
+  orders[id] = o
+end
+
+-- True while an order this station started still has packages on the way.
+local function waitingForRest()
+  for id, o in pairs(orders) do
+    if o.got >= o.need or now() - o.t > ORDER_WAIT_SECONDS then orders[id] = nil end
+  end
+  return next(orders) ~= nil
+end
+
 local function onPackage(pkg)
   state.lastArrival = now()
   local okO, order = pcall(pkg.getOrderData)
+  if okO and type(order) == "table" then pcall(trackOrder, order, pkg) end
   local crafts
   if okO and type(order) == "table" then
     local okC, c = pcall(order.getCrafts)
@@ -685,8 +746,8 @@ local function eventLoop()
       local pkg
       for i = 2, #e do if type(e[i]) == "table" then pkg = e[i] break end end
       if pkg and inputName and (from == nil or from == inputName) then
-        if inputFrogport then setOpen(false) end
         pcall(onPackage, pkg)
+        if inputFrogport and not waitingForRest() then setOpen(false) end
       elseif pkg and not inputName and from and peripheral.hasType(from, "Create_Frogport") then
         table.insert(pairing.candidates, { name = from, pkg = pkg, items = itemsOf(pkg), t = now() })
       end
@@ -730,8 +791,16 @@ local function workLoop()
     end
     if not state.pairing or bufferEmpty() then state.pairingWait = nil end
     if inputFrogport then
-      local open = not state.problem and not state.paused and not state.busy and next(jobs) == nil
+      local idle = not state.problem and not state.paused and not state.busy and next(jobs) == nil
         and now() - state.lastArrival > 0.5 and turtleEmpty() and frogportEmpty() and bufferEmpty()
+      local open = false
+      if not state.problem and waitingForRest() then
+        open = true  -- the rest of an order is on its way: keep taking it here
+      elseif idle then
+        -- only one station takes orders at a time; if two opened together, the lower name keeps it
+        local other = openStation()
+        open = other == nil or (state.advertised == CRAFT_ADDRESS and other > inputName)
+      end
       setOpen(open)
     end
     sleep(0.25)
