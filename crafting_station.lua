@@ -81,19 +81,36 @@ local function saveJobs() writeFile(DIR .. "/jobs", jobs) end
 local function saveStats() writeFile(DIR .. "/stats", stats) end
 
 local logLines = {}
+-- /station/log.txt gets everything (the screen's log plus the detailed "dbg" lines); the
+-- "Upload log" button puts it on Pastebin.
+local LOG_PATH = DIR .. "/log.txt"
+local function writeLogLine(text)
+  pcall(function()
+    if fs.exists(LOG_PATH) and fs.getSize(LOG_PATH) > 150000 then
+      if fs.exists(LOG_PATH .. ".old") then fs.delete(LOG_PATH .. ".old") end
+      fs.move(LOG_PATH, LOG_PATH .. ".old")
+    end
+    local ms = os.epoch("utc") % 1000
+    local f = fs.open(LOG_PATH, "a")
+    f.writeLine(os.date("!%H:%M:%S") .. string.format(".%03d ", ms) .. text)
+    f.close()
+  end)
+end
+
 local function log(kind, text)
   table.insert(logLines, 1, { t = now(), kind = kind, text = text })
   while #logLines > 40 do table.remove(logLines) end
-  pcall(function()
-    local path = DIR .. "/log.txt"
-    if fs.exists(path) and fs.getSize(path) > 20000 then
-      if fs.exists(path .. ".old") then fs.delete(path .. ".old") end
-      fs.move(path, path .. ".old")
-    end
-    local f = fs.open(path, "a")
-    f.writeLine(os.date("!%H:%M:%S") .. " " .. text)
-    f.close()
-  end)
+  writeLogLine("[" .. kind .. "] " .. text)
+end
+
+local function dbg(text) writeLogLine("  " .. text) end
+
+-- "64 oak_planks, 8 stick"
+local function fmtCounts(counts)
+  local parts = {}
+  for name, n in pairs(counts or {}) do parts[#parts + 1] = n .. " " .. tostring(name):gsub("^minecraft:", "") end
+  table.sort(parts)
+  return #parts > 0 and table.concat(parts, ", ") or "nothing"
 end
 
 local state = {
@@ -157,11 +174,14 @@ end
 -- carries the next packages on to a free station.
 local function busyAddress() return BUSY_ADDRESS or (CRAFT_ADDRESS .. "-Busy") end
 
-local function setOpen(open)
+local function setOpen(open, why)
   if not inputFrogport then return end
   local want = open and CRAFT_ADDRESS or busyAddress()
   if state.advertised ~= want then
-    if pcall(inputFrogport.setAddress, want) then state.advertised = want end
+    local ok, err = pcall(inputFrogport.setAddress, want)
+    if ok then state.advertised = want end
+    dbg("Frogport " .. tostring(inputName) .. " -> " .. want .. (why and (" (" .. why .. ")") or "")
+      .. (ok and "" or (" FAILED: " .. tostring(err))))
   end
 end
 
@@ -247,6 +267,27 @@ local function bufferCounts()
   return counts
 end
 
+local function turtleCounts()
+  local counts = {}
+  for i = 1, 16 do
+    local d = turtle.getItemDetail(i)
+    if d then counts[d.name] = (counts[d.name] or 0) + d.count end
+  end
+  return counts
+end
+
+local function snapshot()
+  local frog = "?"
+  if inputFrogport then
+    local ok, l = pcall(inputFrogport.list)
+    local n = 0
+    if ok and type(l) == "table" then for _ in pairs(l) do n = n + 1 end end
+    frog = n .. " pkg"
+  end
+  return "turtle [" .. fmtCounts(turtleCounts()) .. "] barrel [" .. fmtCounts(buffer and bufferCounts() or {})
+    .. "] frogport [" .. frog .. "]"
+end
+
 local function dropToBuffer(count)
   if bufferSide == "top" then return turtle.dropUp(count) end
   return turtle.dropDown(count)
@@ -278,6 +319,7 @@ local SPARE = { 4, 8, 12, 13, 14, 15, 16 }
 
 local function fetch(name, count, target)
   local got = 0
+  local result = {}
   for _ = 1, 12 do
     if got >= count then break end
     local ok, list = pcall(buffer.list)
@@ -301,6 +343,7 @@ local function fetch(name, count, target)
     turtle.select(spare)
     if not suckFromBuffer(64) then break end
     local d = turtle.getItemDetail(spare)
+    if d and d.name ~= name then dbg("    fetch " .. name .. ": dug out " .. d.count .. " " .. d.name .. " first") end
     if d and d.name == name then
       local before = turtle.getItemCount(target)
       turtle.transferTo(target, count - got)
@@ -310,6 +353,7 @@ local function fetch(name, count, target)
       if moved <= 0 then break end
     end
   end
+  dbg("    fetch " .. count .. " " .. name .. " -> slot " .. target .. ": got " .. got)
   return got
 end
 
@@ -372,6 +416,7 @@ local function trackOrder(order, pkg)
   if need > o.need then o.need = need end
   o.got = o.got + got
   orders[id] = o
+  dbg("order " .. tostring(id) .. ": " .. o.got .. " of " .. o.need .. " items here")
 end
 
 -- True while an order this station started still has packages on the way.
@@ -385,6 +430,42 @@ end
 local function onPackage(pkg)
   state.lastArrival = now()
   local okO, order = pcall(pkg.getOrderData)
+  do
+    local items = {}
+    local okL, list = pcall(pkg.list)
+    if okL and type(list) == "table" then
+      for _, it in pairs(list) do
+        if type(it) == "table" and it.name then items[it.name] = (items[it.name] or 0) + (it.count or 0) end
+      end
+    end
+    local info = "no order data"
+    if okO and type(order) == "table" then
+      local okI, id = pcall(order.getOrderID)
+      local okF, final = pcall(order.isFinal)
+      local okK, link = pcall(order.getLinkIndex)
+      local okFL, finalLink = pcall(order.isFinalLink)
+      info = "order " .. tostring(okI and id) .. " link " .. tostring(okK and link) .. " final " .. tostring(okF and final)
+        .. " finalLink " .. tostring(okFL and finalLink)
+      local okOL, olist = pcall(order.list)
+      if okOL and type(olist) == "table" then
+        local whole = {}
+        for k, it in pairs(olist) do
+          if type(it) == "table" then whole[#whole + 1] = tostring(k) .. "=" .. (it.count or "?") .. " " .. tostring(it.name):gsub("^minecraft:", "") end
+        end
+        table.sort(whole)
+        info = info .. " | order list: " .. table.concat(whole, "; ")
+      end
+      local okC, c = pcall(order.getCrafts)
+      if okC and type(c) == "table" and next(c) then
+        for i, craft in pairs(c) do
+          local cells = {}
+          for k = 1, 9 do cells[k] = craft.recipe and craft.recipe[k] and tostring(craft.recipe[k]):gsub("^[^:]+:", "") or "-" end
+          info = info .. " | craft " .. i .. " x" .. tostring(craft.count) .. ": " .. table.concat(cells, ",")
+        end
+      end
+    end
+    dbg("PACKAGE in: " .. fmtCounts(items) .. " | " .. info)
+  end
   if okO and type(order) == "table" then pcall(trackOrder, order, pkg) end
   local crafts
   if okO and type(order) == "table" then
@@ -454,6 +535,7 @@ local function onPackage(pkg)
     end
     job.crafts = craftsFromReceived(job)
     job.waitingSince = job.waitingSince or now()
+    dbg("job " .. jobLabel(job) .. " [" .. key .. "]: received " .. fmtCounts(job.received) .. " -> " .. job.crafts .. " crafts")
   end
   saveJobs()
 end
@@ -464,10 +546,12 @@ end
 -- anything beyond those counts arrived in the meantime and goes to the buffer first.
 local function sendTurtle(keep)
   pcall(outputPackager.setAddress, OUT_ADDRESS)
-  for _ = 1, 40 do
-    if state.bounced then return false end
+  dbg("SEND to " .. OUT_ADDRESS .. ": " .. fmtCounts(turtleCounts()))
+  for attempt = 1, 40 do
+    if state.bounced then dbg("  send stopped: output bounce") return false end
     if turtleEmpty() then
       state.sendFails = 0
+      dbg("  sent after " .. (attempt - 1) .. " makePackage call(s)")
       return true
     end
     if keep then
@@ -481,7 +565,10 @@ local function sendTurtle(keep)
       turtle.select(1)
     end
     local ok, made = pcall(outputPackager.makePackage)
-    if not (ok and made) then sleep(0.5) end
+    if not (ok and made) then
+      if attempt == 1 or attempt % 10 == 0 then dbg("  makePackage #" .. attempt .. ": " .. tostring(ok and made or made)) end
+      sleep(0.5)
+    end
   end
   state.sendFails = state.sendFails + 1
   log("error", "Couldn't send items to " .. OUT_ADDRESS .. " (Packager busy or its Frogport full)")
@@ -509,6 +596,7 @@ end
 
 -- Craft up to `n` crafts of one job. Returns the number of crafts done.
 local function craftBatch(job, n)
+  dbg("CRAFT " .. n .. "x " .. jobLabel(job) .. " | before: " .. snapshot())
   -- 1. empty the turtle into the buffer, then pull each grid slot's items in place
   if not parkAll() then
     state.problem = "Barrel is full"
@@ -534,6 +622,7 @@ local function craftBatch(job, n)
   end
   if crafts <= 0 then
     state.lastFail = "couldn't get all the ingredients out of the Barrel"
+    dbg("  grid incomplete: " .. snapshot())
     parkAll()
     return 0
   end
@@ -555,7 +644,9 @@ local function craftBatch(job, n)
       end
     end
     turtle.select(4)
-    if turtle.craft(crafts) then done = crafts break end
+    local okc, why = turtle.craft(crafts)
+    dbg("  turtle.craft(" .. crafts .. "): " .. tostring(okc) .. (why and (" " .. tostring(why)) or ""))
+    if okc then done = crafts break end
   end
   turtle.select(1)
   if done <= 0 then
@@ -582,8 +673,10 @@ local function craftBatch(job, n)
     end
   end
   turtle.select(1)
+  dbg("  results: " .. fmtCounts(results))
   recordCraft(job, results)
   sendTurtle(keep)
+  dbg("  after: " .. snapshot())
   return done
 end
 
@@ -606,6 +699,7 @@ end
 -- waiting, or for "Send all back").
 local function returnLeftovers()
   if not parkAll() then return end
+  dbg("LEFTOVERS: " .. snapshot())
   local any = false
   for _ = 1, 60 do
     local ok, list = pcall(buffer.list)
@@ -639,6 +733,11 @@ end
 
 local function work()
   state.busy = true
+  do
+    local js = {}
+    for _, job in pairs(jobs) do js[#js + 1] = job.crafts .. "x " .. jobLabel(job) end
+    dbg("WORK jobs [" .. (#js > 0 and table.concat(js, "; ") or "none") .. "] " .. snapshot())
+  end
   if not parkAll() then state.problem = "Barrel is full" end
   local counts = bufferCounts()
   local keys = {}
@@ -657,6 +756,7 @@ local function work()
         job.fails = (job.fails or 0) + 1
         if job.fails >= 3 then
           log("error", "Gave up on " .. job.crafts .. "x " .. jobLabel(job) .. ": " .. tostring(state.lastFail) .. ". Items sent back.")
+          dbg("  gave up; recipe " .. recipeKey(job.recipe) .. " | " .. snapshot())
           job.crafts, job.givenUp = 0, true
         end
         break
@@ -769,6 +869,11 @@ end
 local function eventLoop()
   while true do
     local e = { os.pullEvent() }
+    if e[1] == "package_received" or e[1] == "package_created" or e[1] == "package_sent" then
+      local tbl
+      for i = 2, #e do if type(e[i]) == "table" then tbl = e[i] break end end
+      dbg("event " .. e[1] .. " from " .. tostring(e[2]) .. (tbl and (": " .. itemTotal(tbl) .. " items") or ""))
+    end
     -- the output Packager unpacking means its Frogport handed our own package straight back
     -- (its address matches OUT_ADDRESS): stop instead of sending the same items round forever
     if e[1] == "package_received" and e[2] == OUTPUT_SIDE and not state.bounced then
@@ -858,6 +963,10 @@ local function workLoop()
       end
       setOpen(open)
     end
+    if state.status ~= state.lastLoggedStatus then
+      dbg("status: " .. tostring(state.status) .. (state.problem and (" | problem: " .. state.problem) or ""))
+      state.lastLoggedStatus = state.status
+    end
     sleep(0.25)
   end
 end
@@ -904,9 +1013,59 @@ local function oldestJob()
   return oldest
 end
 
+-- Upload /station/log.txt (plus a summary) to Pastebin; the code shows on the screen.
+local PASTEBIN_KEY = "0ec2eb25b6166c0c27a394ae118ad829"  -- the key CC's own `pastebin` program uses
+
+local function uploadLog()
+  local lines = {
+    "Crafting Station " .. VERSION .. " | " .. stationName() .. " | computer " .. os.getComputerID(),
+    "CRAFT_ADDRESS=" .. tostring(CRAFT_ADDRESS) .. " BUSY=" .. busyAddress() .. " OUT_ADDRESS=" .. tostring(OUT_ADDRESS)
+      .. " INPUT_SIDE=" .. tostring(INPUT_SIDE) .. " OUTPUT_SIDE=" .. tostring(OUTPUT_SIDE) .. " QUIET=" .. tostring(QUIET_SECONDS),
+    "input: " .. tostring(inputName) .. (inputFrogport and " (Frogport)" or inputPackager and " (Packager)" or " (none)")
+      .. " advertised=" .. tostring(state.advertised) .. " | output: " .. (outputPackager and OUTPUT_SIDE or "none")
+      .. " | buffer: " .. tostring(bufferSide) .. " | problem: " .. tostring(state.problem),
+    "now: " .. snapshot(),
+    "peripherals: " .. table.concat(peripheral.getNames(), ", "),
+    "stats: today " .. tostring(stats.today) .. ", total " .. tostring(stats.total),
+    "---- log ----",
+  }
+  local body = table.concat(lines, "\n") .. "\n"
+  for _, path in ipairs({ LOG_PATH .. ".old", LOG_PATH }) do
+    if fs.exists(path) then
+      local f = fs.open(path, "r")
+      body = body .. f.readAll() .. "\n"
+      f.close()
+    end
+  end
+  local post = "api_option=paste&api_dev_key=" .. PASTEBIN_KEY .. "&api_paste_format=text"
+    .. "&api_paste_name=" .. textutils.urlEncode(stationName() .. " log")
+    .. "&api_paste_code=" .. textutils.urlEncode(body)
+  local ok, res, err = pcall(http.post, "https://pastebin.com/api/api_post.php", post,
+    { ["Content-Type"] = "application/x-www-form-urlencoded" })
+  if ok and res then
+    local answer = res.readAll()
+    res.close()
+    local code = answer:match("pastebin%.com/(%w+)")
+    if code then
+      state.pasteCode = code
+      log("info", "Log uploaded: pastebin code " .. code)
+      return
+    end
+    log("error", "Pastebin said: " .. tostring(answer):sub(1, 80))
+  else
+    log("error", "Upload failed (" .. tostring(err or res) .. "). Run: pastebin put station/log.txt")
+  end
+end
+
 local function alertLoop()
   local lastCheck = 0
   while true do
+    if state.uploadWanted then
+      state.uploadWanted = false
+      state.pasteCode = "..."
+      pcall(uploadLog)
+      if state.pasteCode == "..." then state.pasteCode = nil end
+    end
     if now() - lastCheck >= 10 then
       lastCheck = now()
       local name = "**" .. stationName() .. "**"
@@ -1006,6 +1165,11 @@ local function drawHome(w, h)
       y = y + 2
     end
   end
+  if state.pasteCode and state.pasteCode ~= "..." then
+    put(2, y, "Log on Pastebin: ", colors.lightGray)
+    put(19, y, state.pasteCode, colors.yellow)
+    y = y + 1
+  end
   put(2, y, "Today ", colors.lightGray)
   put(8, y, tostring(stats.today), colors.white)
   put(16, y, "All time ", colors.lightGray)
@@ -1091,6 +1255,10 @@ local function draw()
     state.paused = not state.paused
     log("info", state.paused and "Paused" or "Resumed")
   end)
+  local upLabel = state.pasteCode and (" " .. state.pasteCode .. " ") or " Upload log "
+  button(w - #upLabel + 1, h, upLabel, colors.white, colors.blue, function()
+    if http and state.pasteCode ~= "..." then state.uploadWanted = true end
+  end)
   term.setBackgroundColor(colors.black)
 end
 
@@ -1113,6 +1281,8 @@ local function uiLoop()
       elseif e[2] == keys.s then
         state.returnAll = true
         log("info", "Sending everything back to " .. OUT_ADDRESS)
+      elseif e[2] == keys.u then
+        if http then state.uploadWanted = true end
       elseif e[2] == keys.p then
         state.paused = not state.paused
         log("info", state.paused and "Paused" or "Resumed")
@@ -1127,6 +1297,11 @@ end
 findPeripherals()
 if outputPackager then pcall(outputPackager.setAddress, OUT_ADDRESS) end
 log("info", "Started " .. stationName() .. " v" .. VERSION)
+dbg("settings: CRAFT_ADDRESS=" .. tostring(CRAFT_ADDRESS) .. " OUT_ADDRESS=" .. tostring(OUT_ADDRESS)
+  .. " INPUT_SIDE=" .. tostring(INPUT_SIDE) .. " OUTPUT_SIDE=" .. tostring(OUTPUT_SIDE))
+dbg("found: input " .. tostring(inputName) .. (inputFrogport and " (Frogport)" or inputPackager and " (Packager)" or " (none)")
+  .. ", output " .. (outputPackager and OUTPUT_SIDE or "none") .. ", buffer " .. tostring(bufferSide))
+dbg("peripherals: " .. table.concat(peripheral.getNames(), ", "))
 
 local function readyToUpdate()
   return not state.busy and next(jobs) == nil
