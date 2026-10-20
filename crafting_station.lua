@@ -185,19 +185,26 @@ local function setOpen(open, why)
   end
 end
 
--- Another station's input Frogport that is taking orders right now (they share the modem network).
-local stationCache = { names = {}, t = 0 }
+-- Running stations announce themselves over rednet every 2 s: peers[frogport name] = last heard.
+-- Only their Frogports count; a Frogport whose turtle isn't running is ignored.
+local HEARTBEAT = "crafting-station"
+local peers = {}
 
-local function openStation()
-  if now() - stationCache.t > 10 then
-    stationCache.names, stationCache.t = {}, now()
-    for _, name in ipairs(peripheral.getNames()) do
-      if name ~= inputName and peripheral.hasType(name, "Create_Frogport") then table.insert(stationCache.names, name) end
-    end
+local function openModems()
+  for _, name in ipairs(peripheral.getNames()) do
+    if peripheral.hasType(name, "modem") and not rednet.isOpen(name) then pcall(rednet.open, name) end
   end
+end
+
+-- Another running station's input Frogport that is taking orders right now.
+local function openStation()
   local found
   local tasks = {}
-  for _, name in ipairs(stationCache.names) do
+  local alive = {}
+  for frog, t in pairs(peers) do
+    if frog ~= inputName and now() - t < 6 then table.insert(alive, frog) end
+  end
+  for _, name in ipairs(alive) do
     tasks[#tasks + 1] = function()
       local ok, address = pcall(peripheral.call, name, "getAddress")
       if ok and address == CRAFT_ADDRESS and (not found or name < found) then found = name end
@@ -905,8 +912,11 @@ local function eventLoop()
       elseif pkg and not inputName and from and peripheral.hasType(from, "Create_Frogport") then
         table.insert(pairing.candidates, { name = from, pkg = pkg, items = itemsOf(pkg), t = now() })
       end
+    elseif e[1] == "rednet_message" and e[4] == HEARTBEAT and type(e[3]) == "table" and type(e[3].frog) == "string" then
+      peers[e[3].frog] = now()
     elseif e[1] == "peripheral" or e[1] == "peripheral_detach" then
       findPeripherals()
+      openModems()
     end
   end
 end
@@ -986,6 +996,10 @@ local function workLoop()
         open = other == nil or (state.advertised == CRAFT_ADDRESS and other > inputName)
       end
       setOpen(open, open and "taking orders" or "busy")
+    end
+    if inputFrogport and now() - (state.lastBeat or 0) >= 2 then
+      state.lastBeat = now()
+      pcall(rednet.broadcast, { frog = inputName, open = state.advertised == CRAFT_ADDRESS, name = stationName() }, HEARTBEAT)
     end
     if state.status ~= state.lastLoggedStatus then
       dbg("status: " .. tostring(state.status) .. (state.problem and (" | problem: " .. state.problem) or ""))
@@ -1319,6 +1333,7 @@ end
 -- ============================================================ start
 
 findPeripherals()
+openModems()
 if outputPackager then pcall(outputPackager.setAddress, OUT_ADDRESS) end
 log("info", "Started " .. stationName() .. " v" .. VERSION)
 dbg("settings: CRAFT_ADDRESS=" .. tostring(CRAFT_ADDRESS) .. " OUT_ADDRESS=" .. tostring(OUT_ADDRESS)
