@@ -1,3 +1,7 @@
+# CC Crafting Station (replaced)
+
+**This has been replaced by [cc-craft-dispatch](https://github.com/levisnakes/cc-craft-dispatch).** `crafting_station.lua` now installs `crafter.lua` from there and restarts, so turtles still running the old station program switch over by themselves the next time they start (or within 15 minutes). The old program is kept as `crafting_station_v1.lua`.
+
 # CC Crafting Station
 
 A Crafty Turtle that does the 3x3 crafting for Create 6 Factory Gauges, in place of mechanical crafters. The gauges do the ordering; each package carries its recipe; the turtle crafts and sends the results to storage. Build as many stations as you want: they're identical and share one address.
