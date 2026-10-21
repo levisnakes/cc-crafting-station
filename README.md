@@ -45,7 +45,7 @@ At the top of the file, or in `/config.lua` (survives updates; can be shared by 
 - `CRAFT_ADDRESS` the shared crafting address (default `MB-Crafting-In`); `BUSY_ADDRESS` the address while busy
 - `OUT_ADDRESS` where results go (default `MB-Storage-In`)
 - `INPUT_SIDE`, `OUTPUT_SIDE` which side of the turtle each Packager is on (default `front` and `back`)
-- `MAX_QUEUE` (default 2): packages a station lets wait in its Frogport while it is working; past that it goes busy for a moment and the extra packages go back onto the chain to other stations
+- `MAX_QUEUE` (default 0 = off): packages a station lets wait in its Frogport while it is working; past that it goes busy for a moment and the extras go back onto the chain to other stations, but only while another station is open. Leave it off unless you need it: when no Frogport has the crafting address, Create sends packages for it to any catch-all (`*`) Frogport on the network
 - `QUIET_SECONDS` how long to wait after the last package before crafting everything at once
 - `STATION_NAME` name in alerts (default: the turtle's label)
 - `DISCORD_WEBHOOK`, `DISCORD_MENTION` ping when a station is stuck (not set up, buffer full, can't send, ingredients missing for 3+ min); a follow-up without a ping says when it's fixed

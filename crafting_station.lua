@@ -20,8 +20,10 @@ OUTPUT_SIDE = "back"           -- the Packager that sends the results
 TAKE_TURNS = false             -- false: every station keeps CRAFT_ADDRESS and Create spreads the load (a busy
                                -- station's Frogport fills up and the chain moves on). true: one station takes
                                -- orders at a time (slower: the chain needs ~5 s to notice address changes)
-MAX_QUEUE = 2                  -- packages a station keeps waiting in its Frogport; past that it goes busy and
-                               -- the extra ones go back onto the chain to other stations
+MAX_QUEUE = 0                  -- 0 = off. Otherwise: with more than this many packages waiting in its Frogport a
+                               -- working station goes busy and they go back onto the chain to the other stations
+                               -- (only while another station is open: with none open, packages for
+                               -- CRAFT_ADDRESS fall through to a catch-all "*" Frogport somewhere)
 QUIET_SECONDS = 1              -- wait this long after the last package, then craft everything at once
 STATION_NAME = nil             -- nil = the turtle's label, or "Station <id>"
 DISCORD_WEBHOOK = nil          -- Discord webhook URL (in quotes) for "stuck" alerts
@@ -48,7 +50,7 @@ end
 
 -- ============================================================ basics
 
-local VERSION = "1.4.0"
+local VERSION = "1.4.1"
 local DIR = "/station"
 local GRID = { 1, 2, 3, 5, 6, 7, 9, 10, 11 }
 local IS_GRID = {}       -- [turtle slot] = position 1..9 in the recipe
@@ -773,9 +775,10 @@ local function gate()
   end
   if state.problem or state.paused then
     setOpen(false, state.paused and "paused" or "setup problem")
-  elseif queue >= MAX_QUEUE and working then
+  elseif MAX_QUEUE > 0 and queue >= MAX_QUEUE and working and openStation() ~= nil then
     setOpen(false, queue .. " packages waiting: the rest go to other stations")
-  elseif state.advertised ~= CRAFT_ADDRESS and queue == 0 and orders <= 1 then
+  elseif state.advertised ~= CRAFT_ADDRESS and (MAX_QUEUE <= 0 or openStation() == nil or (queue == 0 and orders <= 1)) then
+    -- reopen: shedding off, nobody else open (never leave the address with no Frogport), or caught up
     setOpen(true, "room for more")
   elseif state.advertised == nil then
     setOpen(true, "taking orders")
